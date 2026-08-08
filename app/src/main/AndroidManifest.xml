@@ -12,6 +12,12 @@
         android:name="android.permission.WRITE_EXTERNAL_STORAGE"
         android:maxSdkVersion="28" />
 
+    <!-- In-app camera (docs/CAMERA_PLAN.md). Requested at runtime; the app is fully
+         usable without it (import-only), so the feature is declared not-required so a
+         camera-less device can still install. -->
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-feature android:name="android.hardware.camera.any" android:required="false" />
+
     <application
         android:allowBackup="true"
         android:enableOnBackInvokedCallback="true"

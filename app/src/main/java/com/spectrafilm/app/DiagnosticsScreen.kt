@@ -7,6 +7,8 @@
  */
 package com.spectrafilm.app
 
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -46,6 +48,9 @@ fun DiagnosticsScreen() {
     val scope = rememberCoroutineScope()
     var crash by remember { mutableStateOf<String?>(null) }
     var log by remember { mutableStateOf<String?>(null) }
+    // Phase 0 camera probe (throwaway — docs/CAMERA_PLAN.md §4).
+    var probe by remember { mutableStateOf<String?>(null) }
+    var probing by remember { mutableStateOf(false) }
     // Read the persisted crash off the main thread (file IO).
     LaunchedEffect(Unit) { crash = withContext(Dispatchers.IO) { Diagnostics.lastCrash(ctx) } }
 
@@ -84,6 +89,45 @@ fun DiagnosticsScreen() {
             Text(if (log == null) "Capture logcat" else "Re-capture logcat")
         }
         log?.let { MonoBlock(it) }
+
+        // --- camera probe (Phase 0, THROWAWAY — see docs/CAMERA_PLAN.md §4) ---
+        Text("Camera probe (Phase 0)", style = MaterialTheme.typography.titleMedium)
+        Text(
+            "Reports what RAW this device gives third-party apps, how much of Samsung's " +
+                "ISP we can switch off, and the engine's draft render time.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        // Runs the probe regardless of the permission outcome: section A (inventory) and
+        // section C (engine timing) need no camera, and section B reports itself SKIPPED.
+        fun runProbe() {
+            scope.launch {
+                probing = true
+                probe = withContext(Dispatchers.Default) {
+                    runCatching { CameraProbe.run(ctx) }
+                        .getOrElse { "probe failed: ${it.javaClass.simpleName}: ${it.message}" }
+                }
+                probing = false
+            }
+        }
+        val cameraPermission = rememberLauncherForActivityResult(
+            ActivityResultContracts.RequestPermission()
+        ) { runProbe() }
+        Button(
+            onClick = {
+                if (CameraProbe.hasCameraPermission(ctx)) runProbe()
+                else cameraPermission.launch(android.Manifest.permission.CAMERA)
+            },
+            enabled = !probing,
+            modifier = Modifier.fillMaxWidth(),
+        ) { Text(if (probing) "Probing…" else if (probe == null) "Run camera probe" else "Re-run camera probe") }
+        probe?.let { report ->
+            MonoBlock(report)
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(onClick = { clipboard.setText(AnnotatedString(report)) }) { Text("Copy") }
+                OutlinedButton(onClick = { Diagnostics.share(ctx, report) }) { Text("Share") }
+            }
+        }
 
         // --- share full report ---
         Button(
