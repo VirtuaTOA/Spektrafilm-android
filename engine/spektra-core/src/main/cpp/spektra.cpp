@@ -1968,6 +1968,23 @@ spk_status spk_bake_cube_lut(spk_engine* eng, const spk_params* p, int lut_size,
     // not touch it (a crop/rescale would corrupt the lattice -> wrong LUT).
     bp.crop = 0;
     bp.upscale_factor = 1.0f;
+    // AUTO-EXPOSURE OFF — same reasoning as crop, and a correctness fix, not a
+    // preference. auto_exposure defaults ON, and preprocess_geometry meters the
+    // input to derive ONE global gain. Applied to the lattice it meters a
+    // synthetic n^3 x 1 ramp of every RGB combination — not a photograph — and
+    // bakes that meaningless gain into the LUT, which is then applied to real
+    // images whose correct gain is unrelated. Because the film density curves are
+    // non-linear, the resulting error is not a brightness offset: the scene lands
+    // in the wrong region of the curve (the toe, where base fog lifts shadows and
+    // contrast collapses), which is the underexposed/raised-blacks look reported
+    // against the GPU LUT preview.
+    //
+    // A pointwise LUT fundamentally CANNOT carry auto-exposure: AE is a function
+    // of the whole image, and the lattice is not an image. So the contract is that
+    // the CALLER applies the exposure gain to its pixels BEFORE the LUT lookup;
+    // this bake emits the pure pointwise transform at unity gain. See the
+    // spk_bake_cube_lut docs in spektra.h and docs/CAMERA_PLAN.md.
+    bp.auto_exposure = 0;
 
     // --- Build the identity lattice as an spk_image --------------------------
     // Lattice axes span [0,1] in the engine's linear working space (treated as

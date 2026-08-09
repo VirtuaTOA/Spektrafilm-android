@@ -154,6 +154,14 @@ class SpektraEngine private constructor(
      * effects (grain, halation, diffusion glare, DIR-coupler diffusion, scanner
      * unsharp) cannot be captured by a 3D LUT and are forced OFF for the bake;
      * this is documented in the emitted `.cube` header. Heavy; call off the main thread.
+     *
+     * AUTO-EXPOSURE IS OFF AND THE CALLER OWNS THE GAIN. AE meters a whole image to
+     * derive one global gain; the bake's input is a synthetic lattice, not an image,
+     * so no meaningful gain exists at bake time and the LUT is emitted at UNITY gain.
+     * Anything feeding real pixels through this LUT — the GPU preview, the camera
+     * viewfinder — MUST scale them by the exposure gain first, or the result is dark
+     * with lifted shadows (the scene sits in the film curve's toe). This differs from
+     * [simulate], where the engine's own auto-exposure runs on the real image.
      */
     fun bakeCubeLut(params: SpektraParams, size: Int = 33): String {
         check(!destroyed) { "spektra: bakeCubeLut called on a closed engine" }

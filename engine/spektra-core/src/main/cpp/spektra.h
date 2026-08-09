@@ -363,6 +363,15 @@ const char* spk_status_str(spk_status);
  * upsampling, density curves, pointwise DIR couplers, printing, scanning, and the
  * output color-space transform. This is also noted in the `.cube` header.
  *
+ * AUTO-EXPOSURE IS FORCED OFF, AND THE CALLER MUST SUPPLY THE GAIN. A pointwise
+ * LUT cannot carry auto-exposure: AE meters the whole image to derive one global
+ * gain, and the bake's input is a synthetic identity lattice, not an image. The
+ * emitted LUT is therefore the pure pointwise transform at UNITY GAIN, and a
+ * caller feeding it real pixels must apply the exposure gain to those pixels
+ * BEFORE the lookup or the scene lands in the wrong region of the film's density
+ * curve (dark, with lifted shadows — the toe). Baking with AE left on meters the
+ * lattice and bakes a meaningless gain; that was a real bug, fixed 2026-08.
+ *
  * The `.cube` text (LUT_3D_SIZE N, TITLE, DOMAIN_MIN/MAX, N^3 RGB triples in
  * blue-fastest / red-slowest order) is written NUL-terminated into `out_text`.
  * `*needed` is always set to the required buffer size (including the NUL); if
