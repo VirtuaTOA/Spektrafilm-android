@@ -245,7 +245,72 @@ void pchip_interp_at(const PchipPrep& p, double r, double g, double b,
     }
 }
 
+// Run the prepared interpolator over an (h,w,3) image of ALREADY-normalized
+// [0,1] data. Factored out so the ad-hoc (prepare-per-call) entry points and
+// the prepared/memoized ones execute the SAME loop over the SAME state — the
+// memo cannot drift from a fresh prepare.
+void apply_prepared_normalized(const PchipPrep& prep, const double* norm, int w,
+                               int h, double* out) {
+    const double scale = static_cast<double>(prep.size - 1);
+    const size_t n = static_cast<size_t>(w) * h;
+    for (size_t p = 0; p < n; ++p) {
+        double r = norm[p * 3 + 0] * scale;
+        double g = norm[p * 3 + 1] * scale;
+        double b = norm[p * 3 + 2] * scale;
+        double v[3];
+        pchip_interp_at(prep, r, g, b, v);
+        out[p * 3 + 0] = v[0];
+        out[p * 3 + 1] = v[1];
+        out[p * 3 + 2] = v[2];
+    }
+}
+
+// The steps<=1 degenerate cases, shared by both entry points. Returns true when
+// it handled the LUT (nothing further to do).
+bool apply_degenerate(const Lut3D& L, int w, int h, double* out) {
+    if (L.steps <= 0) return true;
+    // size==1 -> constant LUT value everywhere (_apply_lut_constant_3d).
+    if (L.steps == 1) {
+        const double v0 = L.data[L.index(0, 0, 0, 0)];
+        const double v1 = L.data[L.index(0, 0, 0, 1)];
+        const double v2 = L.data[L.index(0, 0, 0, 2)];
+        const size_t n = static_cast<size_t>(w) * h;
+        for (size_t p = 0; p < n; ++p) {
+            out[p * 3 + 0] = v0;
+            out[p * 3 + 1] = v1;
+            out[p * 3 + 2] = v2;
+        }
+        return true;
+    }
+    return false;
+}
+
+// compute_with_lut's normalization: (data - xmin)/(xmax - xmin).
+void normalize_for_lut(const Lut3D& L, const double* data, int w, int h,
+                       std::vector<double>* norm) {
+    const size_t n = static_cast<size_t>(w) * h;
+    norm->resize(n * 3);
+    for (size_t p = 0; p < n; ++p)
+        for (int c = 0; c < 3; ++c) {
+            double denom = L.xmax[c] - L.xmin[c];
+            (*norm)[p * 3 + c] = (data[p * 3 + c] - L.xmin[c]) / denom;
+        }
+}
+
 }  // namespace
+
+// A built LUT plus its precomputed PCHIP state. Defined here (not in the
+// header) so the prep layout stays private; callers hold it through
+// shared_ptr<const PreparedLut3D>, which only needs the type to be complete at
+// construction.
+//
+// INVARIANT: prep.lut points into lut.data, so an instance must never be copied
+// or moved after prepare_lut_3d_pchip has run. It is created in place inside a
+// shared_ptr and handed out as const, which enforces that.
+struct PreparedLut3D {
+    Lut3D lut;
+    PchipPrep prep;  // meaningful only when lut.steps >= 2
+};
 
 Lut3D build_lut_3d(const double xmin[3], const double xmax[3], int steps,
                    const std::vector<double>& /*fn_inputs_unused*/,
@@ -290,46 +355,43 @@ Lut3D build_lut_3d(const double xmin[3], const double xmax[3], int steps,
 
 void apply_lut_3d_pchip_normalized(const Lut3D& L, const double* norm, int w,
                                    int h, double* out) {
-    if (L.steps <= 0) return;
-    // size==1 -> constant LUT value everywhere (_apply_lut_constant_3d).
-    if (L.steps == 1) {
-        const double v0 = L.data[L.index(0, 0, 0, 0)];
-        const double v1 = L.data[L.index(0, 0, 0, 1)];
-        const double v2 = L.data[L.index(0, 0, 0, 2)];
-        const size_t n = static_cast<size_t>(w) * h;
-        for (size_t p = 0; p < n; ++p) {
-            out[p * 3 + 0] = v0;
-            out[p * 3 + 1] = v1;
-            out[p * 3 + 2] = v2;
-        }
-        return;
-    }
-    const PchipPrep prep = prepare_pchip(L);
-    const double scale = static_cast<double>(L.steps - 1);
-    const size_t n = static_cast<size_t>(w) * h;
-    for (size_t p = 0; p < n; ++p) {
-        double r = norm[p * 3 + 0] * scale;
-        double g = norm[p * 3 + 1] * scale;
-        double b = norm[p * 3 + 2] * scale;
-        double v[3];
-        pchip_interp_at(prep, r, g, b, v);
-        out[p * 3 + 0] = v[0];
-        out[p * 3 + 1] = v[1];
-        out[p * 3 + 2] = v[2];
-    }
+    if (apply_degenerate(L, w, h, out)) return;
+    apply_prepared_normalized(prepare_pchip(L), norm, w, h, out);
 }
 
 void apply_lut_3d_pchip(const Lut3D& L, const double* data, int w, int h,
                         double* out) {
     // compute_with_lut: data_normalized = (data - xmin)/(xmax - xmin).
-    const size_t n = static_cast<size_t>(w) * h;
-    std::vector<double> norm(n * 3);
-    for (size_t p = 0; p < n; ++p)
-        for (int c = 0; c < 3; ++c) {
-            double denom = L.xmax[c] - L.xmin[c];
-            norm[p * 3 + c] = (data[p * 3 + c] - L.xmin[c]) / denom;
-        }
+    std::vector<double> norm;
+    normalize_for_lut(L, data, w, h, &norm);
     apply_lut_3d_pchip_normalized(L, norm.data(), w, h, out);
+}
+
+std::shared_ptr<const PreparedLut3D> prepare_lut_3d_pchip(Lut3D lut) {
+    auto p = std::make_shared<PreparedLut3D>();
+    p->lut = std::move(lut);
+    // The degenerate sizes carry no prep state (apply short-circuits on them).
+    if (p->lut.steps >= 2) p->prep = prepare_pchip(p->lut);
+    return p;
+}
+
+void apply_prepared_lut_3d_pchip(const PreparedLut3D& prepared,
+                                 const double* data, int w, int h,
+                                 double* out) {
+    const Lut3D& L = prepared.lut;
+    if (apply_degenerate(L, w, h, out)) return;
+    std::vector<double> norm;
+    normalize_for_lut(L, data, w, h, &norm);
+    apply_prepared_normalized(prepared.prep, norm.data(), w, h, out);
+}
+
+size_t prepared_lut_3d_bytes(const PreparedLut3D& prepared) {
+    const PchipPrep& p = prepared.prep;
+    return sizeof(PreparedLut3D) +
+           (prepared.lut.data.capacity() + p.slope_x.capacity() +
+            p.slope_y.capacity() + p.slope_z.capacity() +
+            p.cell_min.capacity() + p.cell_max.capacity()) *
+               sizeof(double);
 }
 
 }  // namespace spk
