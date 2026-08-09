@@ -193,17 +193,25 @@ is fully bypassed; and this was tested on the main lens only (see the LIMITED-le
 33 ms frame budget, so **running the real engine on the live viewfinder is ruled out**. The baked
 LUT is the only viable viewfinder. Question closed.
 
-**Caveat — this conclusion may reopen.** If the fixed-cost hypothesis below is right and the LUTs
-get cached, the per-frame cost could fall to roughly 20 ms, which *is* inside a frame budget.
-**Re-measure section C after that work lands before treating "LUT-only viewfinder" as settled.**
-Note that even if the real engine becomes fast enough, it saturates every CPU core continuously —
-for a viewfinder that runs for minutes the GPU LUT may still be the right default on thermal
-grounds, with the real engine reserved for a static-scene check render (§8).
+**CONCLUSION IS FINAL — the LUT viewfinder stands.** This was briefly reopened by a hypothesis that
+~200 ms of the 219 ms was uncached spectral-LUT construction. **That hypothesis was wrong by ~100×.**
+Measured on host at `lut_resolution = 17`: `build_lut_3d` costs 1.3–1.7 ms per LUT and the PCHIP
+prepare 0.23 ms — a total fixed cost of ~1.9 ms, not 200 ms. The structural claim (no cache existed)
+was correct; the magnitude was not. It came from comparing a device `simulate` measurement at 12 MP
+against a device `simulate_preview` measurement at 384 px — different entry points, not a valid
+per-pixel comparison.
 
-Sub-finding: 219 ms for 147 k px is ~12× *worse per pixel* than the measured 1–2 s for 12 MP, which
-implies a fixed per-call cost of roughly 200 ms. (Suggestive, not solid: the two measurements use
-different entry points — `simulate_preview` forces both spectral LUTs on, `simulate` does not — so
-the per-pixel rates are not strictly comparable.) `spk_simulate_preview` force-enables both spectral
+**The device's 219 ms remains unexplained.** Host fits the whole 384 px preview call at
+≈1.9 ms + 0.076 µs/px ≈ 13 ms — a ~17× gap to the phone. Untested lead: `spektra_jni.cpp` resolves
+every param getter with a fresh `GetObjectClass` + string-based `GetMethodID` on each call, ~200 of
+them per render. That is per-call and unamortized, so it would dominate a small render and vanish at
+12 MP — which matches the observed signature — and it is invisible to host benchmarks, which call
+the C++ directly.
+
+None of this changes the decision, and the reason does not depend on any timing number: **the real
+engine saturates every CPU core, and a viewfinder runs for minutes.** Even if it hit 30 fps cold it
+would thermally throttle out of it mid-session, while the GPU LUT is nearly free. Real-engine
+viewfinder is closed; the optional static-scene check render (§8) remains the escape hatch. `spk_simulate_preview` force-enables both spectral
 LUTs (`use_scanner_lut`, `use_enlarger_lut`, 17³) and the engine caches only `profile_cache` /
 `tc_lut_cache` — the scanner and enlarger LUTs appear to be rebuilt on every call. Not on the camera
 critical path (the viewfinder is LUT-based regardless), but it likely costs the **editor** preview
