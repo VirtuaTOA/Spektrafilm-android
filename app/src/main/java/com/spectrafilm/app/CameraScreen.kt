@@ -269,8 +269,13 @@ private fun CameraScreenSupported() {
                     ) { Text(l.label, maxLines = 1) }
                 }
             }
-            // Lens + metering.
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            // Lens + metering. Horizontally scrollable: a fixed Row silently pushed
+            // "Meter + lock" off the right edge once there were enough lens buttons, so
+            // the control simply vanished rather than wrapping.
+            Row(
+                Modifier.horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
                 for (l in lenses) {
                     Button(onClick = { lens = l }, enabled = l != lens) {
                         Text("${l.label}${if (l.supportsRaw) "" else "*"}")

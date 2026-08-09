@@ -384,12 +384,26 @@ private class CameraLutRenderer(
             uniform int uUseLut;
             uniform float uExposureGain;
             out vec4 fragColor;
+            // Cheap per-pixel hash for dithering. Static (no time term) so the noise does
+            // not shimmer between frames.
+            float hash12(vec2 p) {
+                vec3 p3 = fract(vec3(p.xyx) * 0.1031);
+                p3 += dot(p3, p3.yzx + 33.33);
+                return fract((p3.x + p3.y) * p3.z);
+            }
             void main() {
                 vec3 cam = texture(uCam, vUv).rgb;
                 if (uUseLut == 0) { fragColor = vec4(cam, 1.0); return; }
-                // Exposure gain FIRST (the LUT is baked at unity gain), then clamp into
-                // the LUT's [0,1] linear domain. LUT axes are (B,G,R) fastest->slowest.
-                vec3 lin = clamp(cam * uExposureGain, 0.0, 1.0);
+                // The stream is 8-bit and SCENE-LINEAR, which spends very few code values
+                // in the shadows, so gradients arrive already quantised into visible bands
+                // — and uExposureGain multiplies those steps. A +/- half-LSB offset
+                // decorrelates the quantisation, turning bands into fine noise. It cannot
+                // restore lost information; only a 10-bit stream would, and that turned out
+                // to be an HDR-pipeline change rather than a bit-depth one (HLG10 re-exposes
+                // the whole session about a stop down to reserve specular headroom, which
+                // has to be modelled properly). Recorded in docs/CAMERA_PLAN.md.
+                float d = (hash12(gl_FragCoord.xy) - 0.5) * (1.0 / 255.0);
+                vec3 lin = clamp((cam + d) * uExposureGain, 0.0, 1.0);
                 fragColor = vec4(texture(uLut, vec3(lin.b, lin.g, lin.r)).rgb, 1.0);
             }
         """

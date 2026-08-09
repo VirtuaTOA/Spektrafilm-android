@@ -384,6 +384,34 @@ meanwhile.
 - Optional (decided by Phase 0c): hybrid "accurate check render" — run the real engine at draft
   resolution on a static scene to correct the LUT preview.
 
+## 8b. Viewfinder banding — 10-bit attempted and reverted (2026-08-09)
+
+The 8-bit preview stream carries a SCENE-LINEAR signal (the ISP tone curve is disabled so
+the engine sees real radiometry), and linear 8-bit spends almost no code values in the
+shadows — mid-grey sits near code 46. Gradients therefore arrive already quantised, and
+`uExposureGain` multiplies those steps. Two fixes were attempted and both reverted:
+
+1. **sRGB transport curve** (encode in `TONEMAP_CURVE`, decode in the shader). **Silently
+   not applied**: with the 32-point curve requested, mean raw luma stayed at ~0.19
+   (scene-linear); an applied sRGB encode would have read ~0.45. The 4-point identity
+   curve demonstrably IS honoured, so `CONTRAST_CURVE` works — just not that curve.
+2. **HLG10 10-bit** (`DYNAMIC_RANGE_TEN_BIT` is advertised, and the profile WAS granted —
+   the status line read 10-bit). Reverted because **HLG10 changes the exposure semantics
+   of the whole session, not just its bit depth**: mean luma on the untouched 8-bit
+   metering stream fell from ~0.19 to ~0.09, i.e. the camera re-exposed about a stop down
+   to reserve specular headroom, as HDR capture should. Rendering that correctly means
+   modelling HDR reference white and specular headroom — an HDR pipeline, not a flag.
+
+Current state: 8-bit linear plus a +/- half-LSB shader dither, which converts banding into
+fine noise. It cannot restore lost information. **This affects the VIEWFINDER ONLY** —
+captures are RAW at 10-14 bits and never touch this path.
+
+If revisited: the honest scope is HDR reference levels (diffuse white at ~0.5 signal,
+headroom above), plus establishing empirically whether the external texture delivers raw
+HLG or driver-converted display colour, which the API does not report. Do that with a
+measurement first, not by reasoning forward — every failure above came from assuming a
+Camera2 request equals a Camera2 result.
+
 ## 9. Preview fidelity — what will and won't match
 
 Be explicit with expectations; this is the main UX risk.
