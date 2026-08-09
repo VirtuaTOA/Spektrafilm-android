@@ -119,6 +119,23 @@ private fun CameraScreenSupported() {
     ) { ok -> granted = ok; denied = !ok }
     LaunchedEffect(Unit) { if (!granted) permission.launch(android.Manifest.permission.CAMERA) }
 
+    // POST_NOTIFICATIONS is separate and, on Android 13+, ungranted means the foreground
+    // service's notification is silently suppressed — the service still runs, but the user
+    // gets no sign that anything is happening. Asked once, after camera, so the two prompts
+    // do not collide.
+    val notifPermission = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { /* processing continues regardless; only the progress UI depends on it */ }
+    LaunchedEffect(granted) {
+        if (granted && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            androidx.core.content.ContextCompat.checkSelfPermission(
+                ctx, android.Manifest.permission.POST_NOTIFICATIONS,
+            ) != android.content.pm.PackageManager.PERMISSION_GRANTED
+        ) {
+            notifPermission.launch(android.Manifest.permission.POST_NOTIFICATIONS)
+        }
+    }
+
     if (!granted) {
         CameraMessage(
             if (denied) {
@@ -179,6 +196,18 @@ private fun CameraScreenSupported() {
     var gain by remember { mutableFloatStateOf(1f) }
     var aeLocked by remember { mutableStateOf(false) }
     var capturing by remember { mutableStateOf(false) }
+    var canCapture by remember(lens) { mutableStateOf(false) }
+
+    // MediaActionSound, not a bundled asset: it is the platform shutter click, and using it
+    // keeps the app compliant in regions that require an audible shutter.
+    val shutterSound = remember { android.media.MediaActionSound() }
+    DisposableEffect(Unit) {
+        shutterSound.load(android.media.MediaActionSound.SHUTTER_CLICK)
+        onDispose { shutterSound.release() }
+    }
+    // Brief blackout over the viewfinder — the visual half of the shutter. Driven by an
+    // Animatable rather than a boolean so the fade cannot be cut short by recomposition.
+    val flash = remember { androidx.compose.animation.core.Animatable(0f) }
     var queued by remember { mutableStateOf(0) }
     var manualFocus by remember { mutableStateOf(false) }
     // Focus as a CONTINUOUS value in dioptres (1/m), not a step index. Dioptres are the
@@ -236,8 +265,15 @@ private fun CameraScreenSupported() {
         session.open(lens, s, previewSize)
         aeLocked = false
         manualFocus = false
-        kotlinx.coroutines.delay(400)
-        wideGamut = session.previewIsDisplayP3
+        // Poll rather than sleep once: CameraSession has a fallback ladder (RAW+P3 -> RAW
+        // -> preview-only), so the final configuration is not known for a while. These are
+        // plain fields on a non-observable object, so Compose has to be told — without this
+        // the shutter stays disabled forever even once RAW configures successfully.
+        repeat(12) {
+            kotlinx.coroutines.delay(300)
+            wideGamut = session.previewIsDisplayP3
+            canCapture = session.canCapture
+        }
     }
 
     // Bake only once the scroll settles — mid-swipe the selection changes every frame, and
@@ -301,6 +337,13 @@ private fun CameraScreenSupported() {
             onSurfaceReady = { s -> surface = s },
             onUnavailable = { error = "GPU viewfinder unavailable" },
         )
+
+        if (flash.value > 0f) {
+            Box(
+                Modifier.fillMaxSize()
+                    .background(Color.Black.copy(alpha = flash.value.coerceIn(0f, 1f)))
+            )
+        }
 
         // Top-right controls, sitting in the black bar above the viewfinder.
         Row(
@@ -379,13 +422,21 @@ private fun CameraScreenSupported() {
             ProcessToggle(slideMode = slideMode, onToggle = { slideMode = !slideMode })
 
             ShutterButton(
-                enabled = session.canCapture && !capturing,
+                enabled = canCapture && !capturing,
                 onClick = {
-                    if (!session.canCapture) {
+                    if (!canCapture) {
                         error = "This lens cannot capture RAW"
                         return@ShutterButton
                     }
                     capturing = true
+                    shutterSound.play(android.media.MediaActionSound.SHUTTER_CLICK)
+                    scope.launch {
+                        flash.snapTo(1f)
+                        flash.animateTo(
+                            0f,
+                            androidx.compose.animation.core.tween(durationMillis = 260),
+                        )
+                    }
                     val target = java.io.File(
                         CaptureQueue.captureDir(ctx),
                         "SPK_${System.currentTimeMillis()}.dng",

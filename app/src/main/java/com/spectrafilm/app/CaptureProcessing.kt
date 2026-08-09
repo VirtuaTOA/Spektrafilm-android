@@ -119,7 +119,7 @@ class ProcessingService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        startForegroundCompat(CaptureQueue.pending(this), null)
+        startForegroundCompat(0, CaptureQueue.pending(this))
         // Guard against re-entry: onStartCommand fires again for every capture, but one
         // drain loop already picks up whatever has since been added to the queue.
         if (running.compareAndSet(false, true)) {
@@ -136,20 +136,28 @@ class ProcessingService : Service() {
         return START_NOT_STICKY
     }
 
+    private var doneThisRun = 0
+    private var totalThisRun = 0
+
     private fun drain() {
         val engine = runCatching { EngineHolder.get(this) }.getOrNull() ?: run {
             Diag.e("capture: engine unavailable, cannot process", null)
             return
         }
+        totalThisRun = CaptureQueue.pending(this)
+        doneThisRun = 0
         while (true) {
             val job = CaptureQueue.list(this).firstOrNull() ?: break
+            // A capture taken while this loop is running extends the run rather than
+            // starting a second one, so the bar has to grow with it.
+            totalThisRun = maxOf(totalThisRun, doneThisRun + CaptureQueue.pending(this))
             val dng = File(job.dngPath)
             if (!dng.isFile) {
                 Diag.w("capture: queued DNG missing, dropping: ${dng.name}")
                 CaptureQueue.remove(this, job.dngPath)
                 continue
             }
-            startForegroundCompat(CaptureQueue.pending(this), dng.name)
+            notify(doneThisRun, totalThisRun)
             val t0 = System.currentTimeMillis()
             val ok = runCatching { render(engine, job, dng) }
                 .onFailure { Diag.e("capture: render failed for ${dng.name}", it) }
@@ -159,6 +167,8 @@ class ProcessingService : Service() {
             // Dequeue either way: a job that fails deterministically would otherwise block
             // the queue forever, and the DNG is retained so it can be imported by hand.
             CaptureQueue.remove(this, job.dngPath)
+            doneThisRun++
+            notify(doneThisRun, totalThisRun)
         }
     }
 
@@ -193,7 +203,9 @@ class ProcessingService : Service() {
 
     // ---- notification -----------------------------------------------------------------
 
-    private fun startForegroundCompat(remaining: Int, current: String?) {
+    private fun notify(done: Int, total: Int) = startForegroundCompat(done, total)
+
+    private fun startForegroundCompat(done: Int, total: Int) {
         val mgr = getSystemService(NotificationManager::class.java)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val ch = NotificationChannel(
@@ -201,18 +213,31 @@ class ProcessingService : Service() {
             ).apply { description = "Rendering captured photos" }
             mgr?.createNotificationChannel(ch)
         }
+        val remaining = (total - done).coerceAtLeast(0)
         val text = when {
-            current != null && remaining > 1 -> "Rendering… $remaining in queue"
-            current != null -> "Rendering…"
-            else -> "Finishing up…"
+            total <= 0 -> "Finishing up…"
+            remaining <= 0 -> "Finishing up…"
+            total == 1 -> "Developing your photo…"
+            else -> "Developing ${done + 1} of $total…"
         }
-        val n: Notification = NotificationCompat.Builder(this, CHANNEL)
+        val b = NotificationCompat.Builder(this, CHANNEL)
             .setContentTitle("Spektrafilm")
             .setContentText(text)
             .setSmallIcon(android.R.drawable.ic_menu_camera)
             .setOngoing(true)
             .setPriority(NotificationCompat.PRIORITY_LOW)
-            .build()
+            // Tapping it returns to the app rather than doing nothing.
+            .setContentIntent(
+                android.app.PendingIntent.getActivity(
+                    this, 0, Intent(this, MainActivity::class.java),
+                    android.app.PendingIntent.FLAG_IMMUTABLE or
+                        android.app.PendingIntent.FLAG_UPDATE_CURRENT,
+                )
+            )
+        // A single render reports no internal progress, so the bar is indeterminate WITHIN
+        // a photo but determinate ACROSS the queue — which is the part the user can act on.
+        if (total > 1) b.setProgress(total, done, false) else b.setProgress(0, 0, true)
+        val n: Notification = b.build()
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
             startForeground(NOTIF_ID, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
         } else {

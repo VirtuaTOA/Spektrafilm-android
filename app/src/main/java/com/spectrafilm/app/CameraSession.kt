@@ -98,19 +98,29 @@ object CameraInventory {
             val c = runCatching { mgr.getCameraCharacteristics(logicalId) }.getOrNull() ?: continue
             if (c.get(CameraCharacteristics.LENS_FACING) != CameraCharacteristics.LENS_FACING_BACK) continue
             val physIds = runCatching { c.physicalCameraIds }.getOrNull().orEmpty()
-            if (physIds.isEmpty()) {
-                out += lensOf(c, logicalId, null) ?: continue
-            } else {
-                for (pid in physIds) {
-                    val pc = runCatching { mgr.getCameraCharacteristics(pid) }.getOrNull() ?: continue
-                    out += lensOf(pc, logicalId, pid) ?: continue
-                }
+            // The logical camera ITSELF is always an option, and a better one where it
+            // covers the focal length we want: a session that targets a physical id is
+            // subject to much tighter stream-combination limits, and adding a RAW stream
+            // on top of preview + metering exceeds them. The logical path gets the plain
+            // LEVEL_3 guarantee (PRIV + YUV + RAW simultaneously) instead.
+            lensOf(c, logicalId, null)?.let { out += it }
+            for (pid in physIds) {
+                val pc = runCatching { mgr.getCameraCharacteristics(pid) }.getOrNull() ?: continue
+                out += lensOf(pc, logicalId, pid) ?: continue
             }
         }
         // Dedupe by focal length (the ultrawide is commonly exposed both as its own
         // logical id AND as a physical sub-camera); prefer the RAW-capable entry.
         return out.groupBy { "%.1f".format(it.focalMm) }
-            .map { (_, v) -> v.firstOrNull { it.supportsRaw } ?: v.first() }
+            .map { (_, v) ->
+                // Prefer RAW-capable, and among those prefer the LOGICAL camera (no
+                // physical id) for the reason above. Only fall back to a physical id for
+                // focal lengths the logical camera does not expose — which is how the
+                // telephoto is reached at all.
+                v.firstOrNull { it.supportsRaw && it.physicalId == null }
+                    ?: v.firstOrNull { it.supportsRaw }
+                    ?: v.first()
+            }
             .sortedBy { it.focalMm }
     }
 
@@ -268,7 +278,32 @@ class CameraSession(
         }.onFailure { onError("openCamera failed: ${it.message}") }
     }
 
-    private fun configure(camera: CameraDevice, lens: LensOption, surface: Surface, h: Handler) {
+    /**
+     * Session configuration, with a fallback ladder. RAW_SENSOR carries no colour space, so
+     * a Display P3 request covering the whole session can be rejected outright once a RAW
+     * stream is present — and capture matters more than a wide-gamut preview, so P3 is
+     * given up FIRST and the RAW stream only as a last resort.
+     *
+     *   stage 0 : RAW + P3      (best)
+     *   stage 1 : RAW, no P3    (capture preserved)
+     *   stage 2 : no RAW + P3   (viewfinder only)
+     */
+    private fun configure(
+        camera: CameraDevice,
+        lens: LensOption,
+        surface: Surface,
+        h: Handler,
+        stage: Int = 0,
+    ) {
+        val allowRaw = stage <= 1
+        val allowWide = stage != 1
+        // Re-entrant: a failed configuration retries without the RAW stream, so any readers
+        // from the previous attempt must go first or they leak and hold buffers.
+        runCatching { meterReader?.close() }
+        meterReader = null
+        runCatching { rawReader?.close() }
+        rawReader = null
+        captureChars = null
         val outCfg = OutputConfiguration(surface).apply {
             // Select the physical lens. This is the ONLY way to reach the telephoto —
             // it is not in getCameraIdList(). Null means "let the logical camera decide",
@@ -290,7 +325,7 @@ class CameraSession(
         // refuse it, so the reader is only added when the lens advertises a RAW size and the
         // session falls back to preview-only if configuration fails.
         val rawCfgs = mutableListOf<OutputConfiguration>()
-        val rawSize = lens.rawSize
+        val rawSize = if (allowRaw) lens.rawSize else null
         if (rawSize != null) {
             val rr = ImageReader.newInstance(
                 rawSize.width, rawSize.height, ImageFormat.RAW_SENSOR, 2,
@@ -309,7 +344,7 @@ class CameraSession(
             }
         }
         val executor = Executor { r -> h.post(r) }
-        val wideGamut = displayP3Supported(lens)
+        val wideGamut = allowWide && displayP3Supported(lens, withRaw = allowRaw)
         previewIsDisplayP3 = wideGamut
         val cb = object : CameraCaptureSession.StateCallback() {
             override fun onConfigured(s: CameraCaptureSession) {
@@ -326,7 +361,21 @@ class CameraSession(
                     .onFailure { onError("setRepeatingRequest failed: ${it.message}") }
             }
             override fun onConfigureFailed(s: CameraCaptureSession) {
-                onError("capture session configuration failed")
+                // A RAW stream alongside preview + metering is not guaranteed on every
+                // lens (notably the LIMITED ones, and any physical-camera session). Drop
+                // it and retry rather than leaving the user with a dead viewfinder —
+                // capture is then unavailable for that lens, which canCapture reports.
+                when {
+                    stage == 0 -> {
+                        Diag.w("camera: session failed (RAW+P3); retrying RAW without P3")
+                        h.post { configure(camera, lens, surface, h, stage = 1) }
+                    }
+                    stage == 1 -> {
+                        Diag.w("camera: session failed (RAW); retrying preview-only")
+                        h.post { configure(camera, lens, surface, h, stage = 2) }
+                    }
+                    else -> onError("capture session configuration failed")
+                }
             }
         }
         runCatching {
@@ -359,7 +408,7 @@ class CameraSession(
      * Logs what it found: a Camera2 capability is not a Camera2 result, and this feature
      * has been bitten by assuming otherwise more than once.
      */
-    private fun displayP3Supported(lens: LensOption): Boolean {
+    private fun displayP3Supported(lens: LensOption, withRaw: Boolean = true): Boolean {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.UPSIDE_DOWN_CAKE) return false
         val mgr = ctx.getSystemService(Context.CAMERA_SERVICE) as CameraManager
         val chars = runCatching {
@@ -370,7 +419,11 @@ class CameraSession(
         val p3 = android.graphics.ColorSpace.Named.DISPLAY_P3
         val std = android.hardware.camera2.params.DynamicRangeProfiles.STANDARD
         // The SurfaceTexture viewfinder is PRIVATE; the metering reader is YUV_420_888.
-        val ok = listOf(ImageFormat.PRIVATE, ImageFormat.YUV_420_888).all { fmt ->
+        // RAW_SENSOR is included when it will be in the session: setColorSpace applies to
+        // the WHOLE session, so one unsupported output invalidates the request.
+        val formats = mutableListOf(ImageFormat.PRIVATE, ImageFormat.YUV_420_888)
+        if (withRaw && lens.rawSize != null) formats += ImageFormat.RAW_SENSOR
+        val ok = formats.all { fmt ->
             val spaces = runCatching {
                 profiles.getSupportedColorSpacesForDynamicRange(fmt, std)
             }.getOrDefault(emptySet())
