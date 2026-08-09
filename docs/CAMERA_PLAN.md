@@ -276,17 +276,48 @@ Camera2-native while being awkward or unsupported through CameraX:
 common case; none of these are it, and its `Preview` use case is not needed either since the
 viewfinder renders through our own GL surface.
 
-Work:
+#### Metering: an explicit meter/lock button, NOT continuous AE
 
-- CameraX dependencies added to `gradle/libs.versions.toml` (the project uses a version catalog;
-  nothing is currently declared inline). Verify the current CameraX version at implementation time
-  and whether it needs `compileSdk` 34 → 35 — that bump touches the 16 KB-page CI gates and
-  `buildToolsVersion 35.0.0`, so it is a deliberate change, not incidental.
-- Manifest: `android.permission.CAMERA`, `<uses-feature android:name="android.hardware.camera.any"
-  android:required="false" />`.
-- Runtime permission flow — new pattern for this app. Needs a denial/rationale path.
-- `Screen.CAMERA` added to the enum; new files `CameraScreen.kt`, `CameraLutRenderer.kt`,
-  `StockStrip.kt`, `LutBakery.kt`.
+Continuous per-frame metering was the original sketch. It is the wrong design here, and an
+explicit **meter button** (user's proposal) is better on four counts:
+
+1. **It removes a whole problem class.** No per-frame JNI metering, no smoothing filter, no gain
+   jitter, no flicker while panning.
+2. **It matches the workflow being emulated.** Meter the scene, set exposure, shoot. This is a
+   deliberate stills app, not a point-and-shoot; AE-Lock is a standard control on every serious
+   camera, so this is a feature rather than a simplification.
+3. **A locked gain is stable while composing.** Continuous AE re-judges the scene as you pan, so
+   the preview's brightness shifts under you while you are trying to frame.
+4. **It is what makes preview and capture agree — the decisive reason.** Two exposures are in
+   play: the *sensor's* (shutter/ISO, Camera2's `CONTROL_AE_*`) and the *engine's* digital gain.
+   If the sensor's AE keeps moving, the RAW's linear values move with it and a pinned engine gain
+   becomes wrong. So the button must lock **both together**: set `CONTROL_AE_LOCK = true` and
+   capture the engine gain in the same action. Pin both and the viewfinder's exposure is the
+   capture's exposure by construction, instead of by approximation.
+
+Behaviour: meter once automatically when the viewfinder starts (so it is never wildly wrong),
+display the metered EV, and re-meter only on the button. The gain is **stock-independent** —
+`spk_meter_exposure_ev` reads only `auto_exposure`, `auto_exposure_method` and
+`input_cctf_decoding`, never the film profile — so swiping stocks must NOT re-meter. Spot/tap
+metering is a natural later addition.
+
+Work, in **verifiable increments** — the GL external-texture path is the only piece with real
+unknowns left (orientation, aspect and the transform matrix across device rotation), so it is
+proved with a plain passthrough BEFORE the LUT is layered on. A sideways viewfinder and a wrong
+LUT look identical from the couch otherwise.
+
+- **1a.** Manifest `CAMERA` permission (landed in Phase 0) + runtime permission flow — a new
+  pattern for this app, needs a denial/rationale path. `Screen.CAMERA` in the enum.
+- **1b.** `CameraSession.kt` — Camera2 open/session/repeating request, the four ISP-disable keys,
+  `CONTROL_AE_LOCK`, physical-lens selection via `OutputConfiguration.setPhysicalCameraId`.
+- **1c.** `CameraLutRenderer.kt` — GL `samplerExternalOES` + `SurfaceTexture` transform matrix.
+  **Checkpoint: plain passthrough, no LUT.** Verify a live, correctly-oriented, correctly-shaped
+  image first.
+- **1d.** `LutBakery.kt` — bake per stock on a background thread, cached, with `ColorGrade`
+  folded into the lattice (`bakeCubeLut` takes `SpektraParams`, and saturation/vibrance/
+  gamutCompress are not `SpektraParams` fields — without this the viewfinder misses them).
+- **1e.** LUT + `uExposureGain` into the camera shader; meter/lock button.
+- **1f.** Stock picker strip; lens picker (main lens only until the LIMITED lenses are re-probed).
 - **Fork `LutRenderer`** into a camera variant. Reusable as-is: program build, 3D-LUT upload with
   its (B,G,R) axis mapping, full-screen quad, letterbox, driver-failure fallback. Changes needed:
   `samplerExternalOES` + `#extension GL_OES_EGL_image_external_essl3 : require`, the

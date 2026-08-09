@@ -90,7 +90,7 @@ import kotlinx.coroutines.withContext
 private enum class SourceKind { DEMO, PHOTO, RAW }
 
 /** Top-level navigation destinations. */
-private enum class Screen { EDITOR, SETTINGS, ABOUT, CURVES_FILM, CURVES_PRINT, DIAGNOSTICS }
+private enum class Screen { EDITOR, SETTINGS, ABOUT, CURVES_FILM, CURVES_PRINT, DIAGNOSTICS, CAMERA }
 
 /** Adjustment categories shown in the bottom bar; each maps to an existing section. */
 private enum class Category(val label: String) {
@@ -194,7 +194,11 @@ class MainActivity : ComponentActivity() {
                         onThemeChanged = onThemeChanged,
                         onShowOnboarding = { showOnboarding = true; screen = Screen.EDITOR },
                         onOpenDiagnostics = { screen = Screen.DIAGNOSTICS },
+                        onOpenCamera = { screen = Screen.CAMERA },
                     )
+                }
+                Screen.CAMERA -> NavScaffold("Camera", onBack = { screen = Screen.EDITOR }) {
+                    CameraScreen()
                 }
                 Screen.DIAGNOSTICS -> NavScaffold("Diagnostics", onBack = { screen = Screen.SETTINGS }) {
                     DiagnosticsScreen()

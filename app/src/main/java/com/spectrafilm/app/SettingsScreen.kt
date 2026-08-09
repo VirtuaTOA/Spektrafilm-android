@@ -55,6 +55,7 @@ fun SettingsScreen(
     onThemeChanged: (ThemeMode) -> Unit,
     onShowOnboarding: () -> Unit,
     onOpenDiagnostics: () -> Unit = {},
+    onOpenCamera: () -> Unit = {},
 ) {
     val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -217,6 +218,11 @@ fun SettingsScreen(
             }
             OutlinedButton(onClick = onOpenDiagnostics, modifier = Modifier.fillMaxWidth()) {
                 Text("Diagnostics & logs")
+            }
+            // In-app camera (docs/CAMERA_PLAN.md). Lives in Settings while it is a
+            // checkpoint build; it gets a first-class entry point once Phase 1 lands.
+            OutlinedButton(onClick = onOpenCamera, modifier = Modifier.fillMaxWidth()) {
+                Text("Camera (experimental)")
             }
         }
 
