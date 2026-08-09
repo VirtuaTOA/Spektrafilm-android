@@ -90,7 +90,7 @@ import kotlinx.coroutines.withContext
 private enum class SourceKind { DEMO, PHOTO, RAW }
 
 /** Top-level navigation destinations. */
-private enum class Screen { EDITOR, SETTINGS, ABOUT, CURVES_FILM, CURVES_PRINT, DIAGNOSTICS, CAMERA }
+private enum class Screen { HOME, EDITOR, SETTINGS, ABOUT, CURVES_FILM, CURVES_PRINT, DIAGNOSTICS, CAMERA }
 
 /** Adjustment categories shown in the bottom bar; each maps to an existing section. */
 private enum class Category(val label: String) {
@@ -149,7 +149,9 @@ class MainActivity : ComponentActivity() {
         var showEditorCoach by remember { mutableStateOf(!settings.seenEditorCoach) }
         // rememberSaveable: a configuration change (rotating the device) recreates the
         // Activity, and a plain remember would drop the user back to the editor mid-task.
-        var screen by rememberSaveable { mutableStateOf(Screen.EDITOR) }
+        // HOME is the entry point: shoot and edit are genuinely different tasks and the
+        // app cannot guess which one the user opened it for.
+        var screen by rememberSaveable { mutableStateOf(Screen.HOME) }
 
         // Resume any capture queue left behind by a previous run. The process can be killed
         // under memory pressure mid-render — this pipeline allocates over a gigabyte at full
@@ -174,7 +176,15 @@ class MainActivity : ComponentActivity() {
         var curvesPrintName by remember { mutableStateOf("") }
 
         // Back from a pushed sub-screen returns to the editor (root).
-        BackHandler(enabled = screen != Screen.EDITOR) { screen = Screen.EDITOR }
+        BackHandler(enabled = screen != Screen.HOME) {
+            // Settings and Diagnostics belong to the editor side, so back steps to the
+            // editor from those; everything else returns to the launcher.
+            screen = when (screen) {
+                Screen.SETTINGS, Screen.CURVES_FILM, Screen.CURVES_PRINT -> Screen.EDITOR
+                Screen.DIAGNOSTICS -> Screen.SETTINGS
+                else -> Screen.HOME
+            }
+        }
 
         Box(
             Modifier
@@ -206,8 +216,12 @@ class MainActivity : ComponentActivity() {
                         onOpenCamera = { screen = Screen.CAMERA },
                     )
                 }
+                Screen.HOME -> HomeScreen(
+                    onShoot = { screen = Screen.CAMERA },
+                    onEdit = { screen = Screen.EDITOR },
+                )
                 // Full-bleed, no NavScaffold: a title bar over a viewfinder is dead space,
-                // and the system back gesture already returns to the editor (BackHandler above).
+                // and the system back gesture already returns home (BackHandler above).
                 Screen.CAMERA -> CameraScreen()
                 Screen.DIAGNOSTICS -> NavScaffold("Diagnostics", onBack = { screen = Screen.SETTINGS }) {
                     DiagnosticsScreen()

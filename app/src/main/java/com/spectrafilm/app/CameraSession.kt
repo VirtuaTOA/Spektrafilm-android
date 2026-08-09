@@ -174,16 +174,39 @@ object CameraInventory {
         }.getOrNull() ?: 90
     }
 
-    /** Supported preview size nearest 1920x1080 — the size Phase 0 validated the ISP keys at. */
-    fun previewSize(ctx: Context, logicalId: String): Size {
+    /**
+     * Preview size for [logicalId], matching [rawSize]'s ASPECT RATIO where possible and
+     * otherwise as near 1920x1080 as available.
+     *
+     * The aspect match is not cosmetic. A 16:9 preview off a 4:3 sensor is a CROP, so the
+     * viewfinder shows a narrower scene than the capture records — you frame a shot and get
+     * back a wider photo containing things you never saw. Preview resolution is worth
+     * trading for framing that tells the truth.
+     */
+    fun previewSize(ctx: Context, logicalId: String, rawSize: Size? = null): Size {
         val mgr = ctx.getSystemService(Context.CAMERA_SERVICE) as CameraManager
         val map = runCatching {
             mgr.getCameraCharacteristics(logicalId)
                 .get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
         }.getOrNull() ?: return Size(1920, 1080)
+        val sizes = map.getOutputSizes(SurfaceTextureClass)?.toList().orEmpty()
+        if (sizes.isEmpty()) return Size(1920, 1080)
+
         val target = 1920L * 1080
-        return map.getOutputSizes(SurfaceTextureClass)
-            ?.minByOrNull { kotlin.math.abs(it.width.toLong() * it.height - target) }
+        val wantAspect = rawSize?.let { it.width.toFloat() / it.height }
+        if (wantAspect != null) {
+            val matching = sizes.filter {
+                kotlin.math.abs(it.width.toFloat() / it.height - wantAspect) < 0.02f
+            }
+            if (matching.isNotEmpty()) {
+                // Largest that stays within the PREVIEW class the stream-combination
+                // guarantees assume (~1080p); larger risks the session refusing.
+                return matching.filter { it.width.toLong() * it.height <= target * 5 / 4 }
+                    .maxByOrNull { it.width.toLong() * it.height }
+                    ?: matching.minByOrNull { it.width.toLong() * it.height }!!
+            }
+        }
+        return sizes.minByOrNull { kotlin.math.abs(it.width.toLong() * it.height - target) }
             ?: Size(1920, 1080)
     }
 
@@ -224,6 +247,8 @@ class CameraSession(
     @Volatile private var pendingResult: TotalCaptureResult? = null
     @Volatile private var captureTarget: File? = null
     @Volatile private var captureDone: ((File?, String?) -> Unit)? = null
+    @Volatile private var captureOrientation = android.media.ExifInterface.ORIENTATION_NORMAL
+    @Volatile private var sessionSensorOrientation = 90
 
     // Latest luma plane, kept up to date by the ImageReader callback. The viewfinder
     // itself renders from the GL external texture; this SECOND, tiny output exists only
@@ -335,6 +360,11 @@ class CameraSession(
                 tryWriteDng()
             }, h)
             rawReader = rr
+            sessionSensorOrientation = runCatching {
+                (ctx.getSystemService(Context.CAMERA_SERVICE) as CameraManager)
+                    .getCameraCharacteristics(lens.physicalId ?: lens.logicalId)
+                    .get(CameraCharacteristics.SENSOR_ORIENTATION)
+            }.getOrNull() ?: 90
             captureChars = runCatching {
                 (ctx.getSystemService(Context.CAMERA_SERVICE) as CameraManager)
                     .getCameraCharacteristics(lens.physicalId ?: lens.logicalId)
@@ -574,7 +604,7 @@ class CameraSession(
      * RAW frame is captured BEFORE the ISP touches it — the tone curve, sharpening and
      * noise reduction we fight in the viewfinder simply do not exist in this path.
      */
-    fun capture(target: File, onDone: (File?, String?) -> Unit) {
+    fun capture(target: File, deviceRotationDegrees: Int, onDone: (File?, String?) -> Unit) {
         val d = device
         val s = session
         val h = handler
@@ -585,6 +615,7 @@ class CameraSession(
         if (captureDone != null) { onDone(null, "a capture is already in flight"); return }
         captureTarget = target
         captureDone = onDone
+        captureOrientation = exifOrientationFor(deviceRotationDegrees)
         pendingImage = null
         pendingResult = null
         val req = d.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE).apply {
@@ -626,6 +657,12 @@ class CameraSession(
         }
         val err = runCatching {
             DngCreator(chars, res).use { dng ->
+                // WITHOUT THIS the DNG carries no orientation and decodes in SENSOR
+                // orientation — a portrait shot comes back landscape and rotated. LibRaw
+                // uprights RAW from the DNG Orientation tag (which is exactly why
+                // loadSource skips its own EXIF baseline for RAW), so the tag must be
+                // written here or nothing downstream has anything to rotate by.
+                dng.setOrientation(captureOrientation)
                 FileOutputStream(target).use { out -> dng.writeImage(out, img) }
             }
         }.exceptionOrNull()
@@ -635,6 +672,21 @@ class CameraSession(
             finishCapture(null, "DNG write failed: ${err.message}")
         } else {
             finishCapture(target, null)
+        }
+    }
+
+    /**
+     * EXIF orientation for a capture, from the sensor's mounting and how the device is
+     * held: (sensorOrientation + deviceOrientation) mod 360 for a back camera, where
+     * deviceOrientation is the inverse of the display rotation.
+     */
+    private fun exifOrientationFor(deviceRotationDegrees: Int): Int {
+        val device = ((360 - (deviceRotationDegrees % 360)) % 360)
+        return when ((((sessionSensorOrientation + device) % 360) + 360) % 360) {
+            90 -> android.media.ExifInterface.ORIENTATION_ROTATE_90
+            180 -> android.media.ExifInterface.ORIENTATION_ROTATE_180
+            270 -> android.media.ExifInterface.ORIENTATION_ROTATE_270
+            else -> android.media.ExifInterface.ORIENTATION_NORMAL
         }
     }
 

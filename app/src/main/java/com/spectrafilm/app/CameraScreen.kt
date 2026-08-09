@@ -247,7 +247,11 @@ private fun CameraScreenSupported() {
         val sensor = CameraInventory.sensorOrientation(ctx, lens.logicalId)
         ((sensor - displayRotationDegrees(ctx)) + 360) % 360
     }
-    val previewSize = remember(lens) { CameraInventory.previewSize(ctx, lens.logicalId) }
+    // Preview aspect follows the RAW aspect, so the viewfinder frames what the capture
+    // will actually record rather than a 16:9 crop of a 4:3 sensor.
+    val previewSize = remember(lens) {
+        CameraInventory.previewSize(ctx, lens.logicalId, lens.rawSize)
+    }
     val displayAspect = remember(rotation, previewSize) {
         val srcA = previewSize.width.toFloat() / previewSize.height.toFloat()
         if (rotation == 90 || rotation == 270) 1f / srcA else srcA
@@ -441,7 +445,7 @@ private fun CameraScreenSupported() {
                         CaptureQueue.captureDir(ctx),
                         "SPK_${System.currentTimeMillis()}.dng",
                     )
-                    session.capture(target) { file, err ->
+                    session.capture(target, displayRotationDegrees(ctx)) { file, err ->
                         capturing = false
                         if (file == null) {
                             error = err ?: "capture failed"
