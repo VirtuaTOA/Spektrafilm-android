@@ -42,6 +42,7 @@ import android.hardware.camera2.CaptureRequest
 import android.hardware.camera2.params.OutputConfiguration
 import android.hardware.camera2.params.SessionConfiguration
 import android.hardware.camera2.params.TonemapCurve
+import android.media.ImageReader
 import android.os.Build
 import android.os.Handler
 import android.os.HandlerThread
@@ -146,6 +147,11 @@ object CameraInventory {
     private val SurfaceTextureClass = android.graphics.SurfaceTexture::class.java
 }
 
+// Metering stream size. Auto-exposure meters a max-256 downscale internally, so a
+// larger stream would cost bandwidth for a number that would not change.
+private const val METER_W = 320
+private const val METER_H = 240
+
 /**
  * A live Camera2 preview into [surface]. One session per [open]; call [close] when done.
  * All camera callbacks land on a private HandlerThread, never the main thread.
@@ -160,6 +166,19 @@ class CameraSession(
     private var device: CameraDevice? = null
     private var session: CameraCaptureSession? = null
     private var request: CaptureRequest.Builder? = null
+    private var meterReader: ImageReader? = null
+
+    // Latest luma plane, kept up to date by the ImageReader callback. The viewfinder
+    // itself renders from the GL external texture; this SECOND, tiny output exists only
+    // so the exposure can be metered on the CPU — SpektraEngine.meterExposureEv needs a
+    // pixel buffer, and the GL texture is not readable without a round trip.
+    //
+    // Copied on every frame rather than acquired on demand: an ImageReader whose images
+    // are never acquired fills its queue and STALLS the capture session. Copying a
+    // quarter-megapixel luma plane per frame is trivial next to the preview itself.
+    @Volatile private var latestLuma: FloatArray? = null
+    @Volatile private var lumaW = 0
+    @Volatile private var lumaH = 0
 
     @Volatile var aeLocked: Boolean = false
         private set
@@ -195,12 +214,22 @@ class CameraSession(
             // which lands on the main lens.
             if (lens.physicalId != null) setPhysicalCameraId(lens.physicalId)
         }
+        // Metering output. Deliberately tiny: auto-exposure meters a max-256 downscale
+        // internally anyway (see spk_meter_exposure_ev), so a larger stream would cost
+        // bandwidth for a number that would not change.
+        val reader = ImageReader.newInstance(METER_W, METER_H, ImageFormat.YUV_420_888, 2)
+        reader.setOnImageAvailableListener({ r -> captureLuma(r) }, h)
+        meterReader = reader
+        val meterCfg = OutputConfiguration(reader.surface).apply {
+            if (lens.physicalId != null) setPhysicalCameraId(lens.physicalId)
+        }
         val executor = Executor { r -> h.post(r) }
         val cb = object : CameraCaptureSession.StateCallback() {
             override fun onConfigured(s: CameraCaptureSession) {
                 session = s
                 val b = camera.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW).apply {
                     addTarget(surface)
+                    meterReader?.surface?.let { addTarget(it) }
                     applyIspDisables(this)
                     set(CaptureRequest.CONTROL_AE_LOCK, aeLocked)
                 }
@@ -214,7 +243,9 @@ class CameraSession(
         }
         runCatching {
             camera.createCaptureSession(
-                SessionConfiguration(SessionConfiguration.SESSION_REGULAR, listOf(outCfg), executor, cb)
+                SessionConfiguration(
+                    SessionConfiguration.SESSION_REGULAR, listOf(outCfg, meterCfg), executor, cb,
+                )
             )
         }.onFailure { onError("createCaptureSession failed: ${it.message}") }
     }
@@ -261,10 +292,68 @@ class CameraSession(
             .onFailure { onError("AE lock failed: ${it.message}") }
     }
 
+    /**
+     * Copy the newest frame's luma plane. Y is the ISP's luminance and, with the tone
+     * curve disabled, is near-linear — which is what the engine's metering wants. Only
+     * luminance is needed: measure_autoexposure_ev reduces RGB to Y before metering, so
+     * feeding a neutral (Y,Y,Y) triple yields the same EV as the full-colour frame
+     * would, with no YUV->RGB matrix and no colour-space assumptions to get wrong.
+     */
+    private fun captureLuma(reader: ImageReader) {
+        val img = runCatching { reader.acquireLatestImage() }.getOrNull() ?: return
+        try {
+            val plane = img.planes[0]
+            val buf = plane.buffer
+            val w = img.width
+            val hgt = img.height
+            val rowStride = plane.rowStride
+            val pixStride = plane.pixelStride
+            val out = FloatArray(w * hgt)
+            val row = ByteArray(rowStride)
+            var i = 0
+            for (y in 0 until hgt) {
+                buf.position(y * rowStride)
+                val n = minOf(rowStride, buf.remaining())
+                buf.get(row, 0, n)
+                var x = 0
+                var k = 0
+                while (x < w) {
+                    out[i++] = (row[k].toInt() and 0xFF) / 255f
+                    k += pixStride
+                    x++
+                }
+            }
+            latestLuma = out; lumaW = w; lumaH = hgt
+        } catch (_: Throwable) {
+            // A torn frame is not worth failing metering over; the next one will do.
+        } finally {
+            runCatching { img.close() }
+        }
+    }
+
+    /** The newest luma frame as an engine-ready neutral image, or null if none yet. */
+    fun latestLumaImage(): com.spectrafilm.engine.LinearImage? {
+        val luma = latestLuma ?: return null
+        val w = lumaW
+        val h = lumaH
+        if (w <= 0 || h <= 0 || luma.size < w * h) return null
+        val buf = java.nio.ByteBuffer.allocateDirect(w * h * 3 * 4)
+            .order(java.nio.ByteOrder.nativeOrder())
+        val f = buf.asFloatBuffer()
+        for (i in 0 until w * h) {
+            val v = luma[i]
+            f.put(i * 3, v); f.put(i * 3 + 1, v); f.put(i * 3 + 2, v)
+        }
+        return com.spectrafilm.engine.LinearImage(buf, w, h, colorSpace = "ProPhoto RGB")
+    }
+
     fun close() {
         runCatching { session?.stopRepeating() }
         runCatching { session?.close() }
         runCatching { device?.close() }
+        runCatching { meterReader?.close() }
+        meterReader = null
+        latestLuma = null
         session = null; device = null; request = null
         thread?.quitSafely()
         thread = null; handler = null
