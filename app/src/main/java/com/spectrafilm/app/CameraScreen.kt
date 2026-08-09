@@ -2,19 +2,20 @@
  * Spektrafilm for Android — in-app camera screen. GPLv3.
  * Film modeling powered by spektrafilm.
  *
- * Phase 1 of docs/CAMERA_PLAN.md: a live viewfinder previewing the selected film stock
- * through a baked 3D LUT, with an explicit meter/lock button.
+ * A stock-camera-style viewfinder: the film stock is chosen from a snapping horizontal
+ * scroller in place of a phone camera's mode picker, so changing film feels like changing
+ * mode rather than opening a settings panel.
+ *
+ * NEGATIVE / SLIDE is not merely a filter over names. Reversal (slide) film IS a positive,
+ * so it is scanned directly instead of being printed — `scanFilm = true` — which is a
+ * genuinely different render route through the engine. Selecting SLIDE therefore swaps
+ * both the stock list and the route.
  *
  * METER/LOCK, NOT CONTINUOUS AE. Two exposures are in play — the SENSOR's (Camera2's
- * auto-exposure) and the ENGINE's digital gain. If the sensor keeps re-metering, the
- * RAW's linear values move underneath a pinned engine gain and it drifts out of
- * correctness. So the button locks BOTH in one action: CONTROL_AE_LOCK on the sensor,
- * and the engine's gain captured from the same moment. Pin both and the viewfinder's
- * exposure IS the capture's exposure, rather than an approximation of it. It also
- * removes per-frame metering, a smoothing filter, and gain flicker while panning.
- *
- * The gain is stock-INDEPENDENT (spk_meter_exposure_ev reads only the AE settings,
- * never the film profile), so swiping looks deliberately does not re-meter.
+ * auto-exposure) and the ENGINE's digital gain. If the sensor keeps re-metering, the RAW's
+ * linear values move underneath a pinned engine gain and it drifts out of correctness. The
+ * lock pins both in one action. The gain is stock-INDEPENDENT (spk_meter_exposure_ev reads
+ * only the AE settings, never the film profile), so swiping stocks does not re-meter.
  */
 package com.spectrafilm.app
 
@@ -22,54 +23,68 @@ import android.os.Build
 import android.view.Surface
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
-import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.snapping.rememberSnapFlingBehavior
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyListState
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
-import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.spectrafilm.engine.SpektraEngine
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlin.math.abs
 
-/** One selectable look: a stable id, a label, and how to load it onto a fresh state. */
-private class CameraLook(
-    val id: String,
-    val label: String,
-    val applyTo: (ParamsState) -> Unit,
-)
+private val SELECTED = Color.White
+private val UNSELECTED = Color(0xFF8A8A8A)
+private val STOCK_ITEM_WIDTH = 170.dp
 
 @Composable
 fun CameraScreen() {
-    // Direct SDK_INT check, not CameraInventory.isSupported: lint's NewApi analysis
-    // follows a literal Build.VERSION comparison but cannot see through a property,
-    // and the body below calls API-28 camera APIs for real.
+    // Direct SDK_INT check, not CameraInventory.isSupported: lint's NewApi analysis follows
+    // a literal Build.VERSION comparison but cannot see through a property.
     if (Build.VERSION.SDK_INT < Build.VERSION_CODES.P) {
         CameraMessage(
             "The in-app camera needs Android 9 or newer.\n\n" +
@@ -97,9 +112,8 @@ private fun CameraScreenSupported() {
     if (!granted) {
         CameraMessage(
             if (denied) {
-                "Camera permission was declined.\n\n" +
-                    "The camera needs it to show a viewfinder. You can grant it in " +
-                    "Android Settings > Apps > Spektrafilm > Permissions, then come back."
+                "Camera permission was declined.\n\nGrant it in Android Settings > Apps > " +
+                    "Spektrafilm > Permissions, then come back."
             } else {
                 "Waiting for camera permission…"
             }
@@ -107,8 +121,6 @@ private fun CameraScreenSupported() {
         return
     }
 
-    // Rear lenses, including the physical sub-cameras that getCameraIdList() hides —
-    // on this device the 3x telephoto is only reachable that way.
     val lenses = remember { CameraInventory.rearLenses(ctx) }
     if (lenses.isEmpty()) {
         CameraMessage("No rear camera reported RAW-capable output on this device.")
@@ -118,34 +130,43 @@ private fun CameraScreenSupported() {
         mutableStateOf(lenses.firstOrNull { it.label == "1x" } ?: lenses.first())
     }
 
-    // Looks: "Neutral" is a bare ParamsState — its defaults are already kodak_portra_400
-    // + kodak_portra_endura, the neutral rendering. User presets come first because they
-    // are the user's own looks; the bundled ones follow.
-    val looks = remember {
-        buildList {
-            add(CameraLook("neutral", "Neutral") { /* defaults are the neutral look */ })
-            runCatching { Presets.list(ctx) }.getOrDefault(emptyList()).forEach { name ->
-                add(CameraLook("user:$name", name) { st ->
-                    runCatching { Presets.load(ctx, name, st) }
-                })
-            }
-            runCatching { BuiltInPresets.load(ctx) }.getOrDefault(emptyList()).forEach { p ->
-                add(CameraLook("builtin:${p.id}", p.name) { st -> BuiltInPresets.apply(p, st) })
-            }
+    // --- film stocks, split by process --------------------------------------------------
+    // One preset per film stock, each carrying its own process: reversal stocks set
+    // scanFilm (scanned as a positive rather than printed), negatives do not. So the
+    // toggle filters on the preset's own group rather than second-guessing the stock.
+    var slideMode by remember { mutableStateOf(false) }
+    val allPresets = remember { runCatching { BuiltInPresets.load(ctx) }.getOrDefault(emptyList()) }
+    val stocks = remember(slideMode, allPresets) {
+        allPresets.filter { (it.group == "Slide") == slideMode }
+    }
+    if (stocks.isEmpty()) {
+        CameraMessage("No film stocks available for this mode.")
+        return
+    }
+
+    // A separate list state per process, so switching does not leave the scroller parked
+    // at an index the new (shorter) list does not have.
+    val listState = remember(slideMode) { LazyListState() }
+    // The centred item IS the selection — the point of a snapping scroller.
+    val centred by remember(listState) {
+        derivedStateOf {
+            val info = listState.layoutInfo
+            val mid = (info.viewportStartOffset + info.viewportEndOffset) / 2
+            info.visibleItemsInfo.minByOrNull { abs((it.offset + it.size / 2) - mid) }?.index ?: 0
         }
     }
-    var lookIndex by remember { mutableIntStateOf(0) }
-    val look = looks[lookIndex]
-    // A FRESH ParamsState per look, so switching never inherits the previous look's
-    // parameters — applying a preset only overwrites the fields it declares.
-    val camState = remember(lookIndex) { ParamsState().also { look.applyTo(it) } }
+    val stockIndex = centred.coerceIn(0, stocks.lastIndex)
+    val stock = stocks[stockIndex]
 
-    var status by remember { mutableStateOf("starting camera…") }
-    var glBroken by remember { mutableStateOf(false) }
+    // A FRESH ParamsState per stock, so switching never inherits the previous one; the
+    // preset then sets film + print stock, process, grain, halation, couplers and grade.
+    val camState = remember(stock.id) {
+        ParamsState().also { BuiltInPresets.apply(stock, it) }
+    }
+
+    var error by remember { mutableStateOf<String?>(null) }
     var lut by remember { mutableStateOf<CubeLut?>(null) }
-    var baking by remember { mutableStateOf(false) }
     var gain by remember { mutableFloatStateOf(1f) }
-    var meterEv by remember { mutableStateOf<Double?>(null) }
     var aeLocked by remember { mutableStateOf(false) }
 
     var engine by remember { mutableStateOf<SpektraEngine?>(null) }
@@ -153,7 +174,7 @@ private fun CameraScreenSupported() {
         engine = runCatching { withContext(Dispatchers.IO) { EngineHolder.get(ctx) } }.getOrNull()
     }
 
-    val session = remember { CameraSession(ctx) { msg -> status = "camera error: $msg" } }
+    val session = remember { CameraSession(ctx) { msg -> error = msg } }
     DisposableEffect(Unit) { onDispose { session.close() } }
 
     val rotation = remember(lens) {
@@ -166,8 +187,7 @@ private fun CameraScreenSupported() {
         if (rotation == 90 || rotation == 270) 1f / srcA else srcA
     }
     // Device-verified 0 on SM-S931B: this driver's SurfaceTexture transform matrix already
-    // applies the sensor->display rotation. A device that does NOT pre-rotate would need
-    // `rotation` here, which is why it stays a parameter (see CameraGlPreview).
+    // applies the sensor->display rotation (see CameraGlPreview).
     val uvRotation = 0
 
     var surface by remember { mutableStateOf<Surface?>(null) }
@@ -177,27 +197,25 @@ private fun CameraScreenSupported() {
         aeLocked = false
     }
 
-    // Bake the look. Heavy on a miss (size^3 lattice points through the pipeline), free on
-    // a cache hit, so swiping back to a previous stock is instant.
-    LaunchedEffect(engine, lookIndex) {
+    // Bake only once the scroll settles — mid-swipe the selection changes every frame, and
+    // baking each one would be wasted work even with the cache.
+    LaunchedEffect(engine, stock.id, slideMode, listState.isScrollInProgress) {
+        if (listState.isScrollInProgress) return@LaunchedEffect
         val e = engine ?: return@LaunchedEffect
-        baking = true
-        lut = withContext(Dispatchers.Default) { LutBakery.bake(e, camState, look.id) }
-        baking = false
-        if (lut == null) Diag.w("camera: LUT bake failed for ${look.id} -> passthrough")
+        val baked = withContext(Dispatchers.Default) { LutBakery.bake(e, camState, stock.id) }
+        if (baked == null) Diag.w("camera: LUT bake failed for ${stock.id} -> passthrough")
+        lut = baked
     }
 
-    /** Lock the sensor's AE and capture the engine's matching gain in one action. */
     fun meterAndLock() {
         val e = engine ?: return
         scope.launch {
-            val img = session.latestLumaImage()
-            if (img == null) { status = "no frame to meter yet"; return@launch }
+            val img = session.latestLumaImage() ?: return@launch
             val ev = runCatching {
-                withContext(Dispatchers.Default) { img.use { e.meterExposureEv(it, camState.toParams()) } }
-            }.getOrNull()
-            if (ev == null) { status = "metering failed"; return@launch }
-            meterEv = ev
+                withContext(Dispatchers.Default) {
+                    img.use { e.meterExposureEv(it, camState.toParams()) }
+                }
+            }.getOrNull() ?: return@launch
             gain = Math.pow(2.0, ev).toFloat()
             session.setAeLock(true)
             aeLocked = true
@@ -205,18 +223,19 @@ private fun CameraScreenSupported() {
         }
     }
 
-    // Meter once automatically shortly after the stream starts, so the viewfinder is never
-    // wildly wrong before the user touches anything. Left UNLOCKED: the sensor keeps
-    // adapting until the user deliberately locks.
+    // One automatic meter shortly after the stream starts, left UNLOCKED, so the viewfinder
+    // is never wildly wrong before the user touches anything.
     LaunchedEffect(surface, lens, engine) {
         val e = engine ?: return@LaunchedEffect
         if (surface == null) return@LaunchedEffect
         kotlinx.coroutines.delay(1200)
+        if (aeLocked) return@LaunchedEffect
         val img = session.latestLumaImage() ?: return@LaunchedEffect
-        val ev = runCatching {
-            withContext(Dispatchers.Default) { img.use { e.meterExposureEv(it, camState.toParams()) } }
-        }.getOrNull() ?: return@LaunchedEffect
-        if (!aeLocked) { meterEv = ev; gain = Math.pow(2.0, ev).toFloat() }
+        runCatching {
+            withContext(Dispatchers.Default) {
+                img.use { e.meterExposureEv(it, camState.toParams()) }
+            }
+        }.getOrNull()?.let { gain = Math.pow(2.0, it).toFloat() }
     }
 
     Box(Modifier.fillMaxSize().background(Color.Black)) {
@@ -229,70 +248,149 @@ private fun CameraScreenSupported() {
             lut = lut,
             exposureGain = gain,
             onSurfaceReady = { s -> surface = s },
-            onUnavailable = { glBroken = true },
+            onUnavailable = { error = "GPU viewfinder unavailable" },
         )
+
         Column(
             Modifier.align(Alignment.BottomCenter).fillMaxWidth()
-                .background(Color.Black.copy(alpha = 0.5f))
-                .navigationBarsPadding().padding(12.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
+                .background(Color.Black)
+                .navigationBarsPadding()
+                .padding(top = 10.dp, bottom = 14.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
-            if (glBroken) {
-                Text(
-                    "GPU viewfinder unavailable — shader or GL context failed.",
-                    color = Color(0xFFFF8A80),
-                    style = MaterialTheme.typography.bodySmall,
-                )
+            error?.let {
+                Text(it, color = Color(0xFFFF8A80), style = MaterialTheme.typography.bodySmall)
             }
-            Text(
-                buildString {
-                    append("${lens.label} · ${lens.focalMm}mm · ")
-                    append(if (baking) "baking look…" else if (lut != null) look.label else "passthrough")
-                    meterEv?.let { append(" · %+.2f EV".format(it)) }
-                    if (aeLocked) append(" · AE LOCK")
-                },
-                color = Color.White,
-                style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+
+            ProcessToggle(slideMode = slideMode, onToggle = { slideMode = !slideMode })
+
+            StockScroller(
+                stocks = stocks,
+                selectedIndex = stockIndex,
+                listState = listState,
+                onPick = { i -> scope.launch { listState.animateScrollToItem(i) } },
             )
-            // Film looks.
+
             Row(
-                Modifier.horizontalScroll(rememberScrollState()),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                looks.forEachIndexed { i, l ->
-                    Button(
-                        onClick = { lookIndex = i },
-                        enabled = i != lookIndex,
-                        colors = if (i == lookIndex) {
-                            ButtonDefaults.buttonColors(containerColor = Color(0xFF6650A4))
-                        } else ButtonDefaults.buttonColors(),
-                    ) { Text(l.label, maxLines = 1) }
-                }
-            }
-            // Lens + metering. Horizontally scrollable: a fixed Row silently pushed
-            // "Meter + lock" off the right edge once there were enough lens buttons, so
-            // the control simply vanished rather than wrapping.
-            Row(
-                Modifier.horizontalScroll(rememberScrollState()),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(14.dp),
             ) {
                 for (l in lenses) {
-                    Button(onClick = { lens = l }, enabled = l != lens) {
-                        Text("${l.label}${if (l.supportsRaw) "" else "*"}")
-                    }
+                    LensChip(label = l.label, selected = l == lens, onClick = { lens = l })
                 }
-                Button(onClick = { meterAndLock() }) { Text(if (aeLocked) "Re-meter" else "Meter + lock") }
-                if (aeLocked) {
-                    Button(onClick = { session.setAeLock(false); aeLocked = false }) { Text("Unlock") }
-                }
+                AeChip(locked = aeLocked, onClick = {
+                    if (aeLocked) { session.setAeLock(false); aeLocked = false } else meterAndLock()
+                })
             }
-            Text(
-                "Grain and halation cannot be previewed — a 3D LUT carries colour and tone " +
-                    "only. They are applied on capture.",
-                color = Color.White.copy(alpha = 0.7f),
-                style = MaterialTheme.typography.bodySmall,
-            )
+
+            ShutterButton(onClick = { error = "Capture arrives in the next step" })
         }
+    }
+}
+
+/** NEGATIVE / SLIDE, two-tone like a stock camera's mode label. */
+@Composable
+private fun ProcessToggle(slideMode: Boolean, onToggle: () -> Unit) {
+    Text(
+        buildAnnotatedString {
+            withStyle(
+                SpanStyle(
+                    color = if (!slideMode) SELECTED else UNSELECTED,
+                    fontWeight = if (!slideMode) FontWeight.Bold else FontWeight.Normal,
+                )
+            ) { append("NEGATIVE") }
+            withStyle(SpanStyle(color = UNSELECTED)) { append("   /   ") }
+            withStyle(
+                SpanStyle(
+                    color = if (slideMode) SELECTED else UNSELECTED,
+                    fontWeight = if (slideMode) FontWeight.Bold else FontWeight.Normal,
+                )
+            ) { append("SLIDE") }
+        },
+        fontSize = 12.sp,
+        letterSpacing = 1.sp,
+        modifier = Modifier
+            .clip(RoundedCornerShape(14.dp))
+            .clickable(onClick = onToggle)
+            .padding(horizontal = 14.dp, vertical = 6.dp),
+    )
+}
+
+/** Snapping horizontal stock picker; the centred item is the selection. */
+@Composable
+private fun StockScroller(
+    stocks: List<BuiltInPreset>,
+    selectedIndex: Int,
+    listState: LazyListState,
+    onPick: (Int) -> Unit,
+) {
+    // Half a screen minus half an item, so the first and last entries can reach the centre.
+    val screenW = LocalConfiguration.current.screenWidthDp.dp
+    val sidePad = ((screenW - STOCK_ITEM_WIDTH) / 2).coerceAtLeast(0.dp)
+    LazyRow(
+        state = listState,
+        flingBehavior = rememberSnapFlingBehavior(lazyListState = listState),
+        contentPadding = PaddingValues(horizontal = sidePad),
+        modifier = Modifier.fillMaxWidth().height(34.dp),
+    ) {
+        itemsIndexed(stocks) { i, s ->
+            val on = i == selectedIndex
+            Box(
+                Modifier.width(STOCK_ITEM_WIDTH).fillMaxHeight().clickable { onPick(i) },
+                contentAlignment = Alignment.Center,
+            ) {
+                Text(
+                    s.name,
+                    color = if (on) SELECTED else UNSELECTED,
+                    fontWeight = if (on) FontWeight.Bold else FontWeight.Normal,
+                    fontSize = 13.sp,
+                    letterSpacing = 1.sp,
+                    maxLines = 1,
+                    textAlign = TextAlign.Center,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun LensChip(label: String, selected: Boolean, onClick: () -> Unit) {
+    Box(
+        Modifier.size(38.dp).clip(RoundedCornerShape(19.dp))
+            .background(if (selected) Color(0x33FFFFFF) else Color.Transparent)
+            .clickable(onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(label, color = if (selected) SELECTED else UNSELECTED, fontSize = 11.sp)
+    }
+}
+
+@Composable
+private fun AeChip(locked: Boolean, onClick: () -> Unit) {
+    Box(
+        Modifier.height(38.dp).clip(RoundedCornerShape(19.dp))
+            .background(if (locked) Color(0x33FFFFFF) else Color.Transparent)
+            .clickable(onClick = onClick)
+            .padding(horizontal = 12.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            if (locked) "AE-L" else "AE",
+            color = if (locked) SELECTED else UNSELECTED,
+            fontSize = 11.sp,
+            letterSpacing = 1.sp,
+        )
+    }
+}
+
+/** Classic shutter: filled disc inside a ring. */
+@Composable
+private fun ShutterButton(onClick: () -> Unit) {
+    Canvas(Modifier.size(70.dp).clip(RoundedCornerShape(35.dp)).clickable(onClick = onClick)) {
+        val r = size.minDimension / 2f
+        drawCircle(Color.White, radius = r - 2.dp.toPx(), style = Stroke(width = 3.dp.toPx()))
+        drawCircle(Color.White, radius = r - 9.dp.toPx())
     }
 }
 

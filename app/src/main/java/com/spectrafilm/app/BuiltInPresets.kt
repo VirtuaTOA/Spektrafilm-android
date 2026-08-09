@@ -99,6 +99,16 @@ object BuiltInPresets {
             }
         }
 
+        // Post-engine creative grade. These are NOT SpektraParams fields (they are applied
+        // by ColorGrade on the render's output buffer), so without this block a built-in
+        // preset silently could not set them — the same schema Presets.encode/decode uses.
+        p.optJSONObject("grade")?.let { g ->
+            if (g.has("contrast")) s.contrast = g.f("contrast", s.contrast)
+            if (g.has("saturation")) s.saturation = g.f("saturation", s.saturation)
+            if (g.has("vibrance")) s.vibrance = g.f("vibrance", s.vibrance)
+            if (g.has("gamutCompress")) s.gamutCompress = g.f("gamutCompress", s.gamutCompress)
+        }
+
         p.optJSONObject("settings")?.let { st ->
             if (st.has("rgbToRawMethod")) {
                 s.spectralUpsampling = enumOf(st.optString("rgbToRawMethod"), Rgb2Raw.entries, s.spectralUpsampling)
