@@ -24,6 +24,7 @@
 #include <vector>
 
 #include "kernels/gaussian.h"
+#include "kernels/parallel.h"
 #include "kernels/stats.h"
 
 namespace spk {
@@ -36,24 +37,65 @@ void layer_particle_model(const float* density, int npix, int width, int height,
                          /*blur_particle=*/0.0, out);
 }
 
+// Pixels per independently-seeded grain block. FIXED — never derived from the worker
+// count — because the block index is what seeds the RNG, so a block's output must not
+// depend on how the work was distributed.
+constexpr int kGrainBlockPixels = 8192;
+
+// SplitMix64 finalizer over (seed, block). Decorrelates adjacent blocks so the grain
+// field has no visible seam or periodicity at block boundaries.
+static inline uint64_t grain_block_seed(uint64_t seed, int block) {
+    uint64_t x = seed + 0x9E3779B97F4A7C15ULL * static_cast<uint64_t>(block + 1);
+    x = (x ^ (x >> 30)) * 0xBF58476D1CE4E5B9ULL;
+    x = (x ^ (x >> 27)) * 0x94D049BB133111EBULL;
+    return x ^ (x >> 31);
+}
+
 void layer_particle_model(const float* density, int npix, int width, int height,
                           double density_max, double n_particles_per_pixel,
                           double grain_uniformity, uint64_t seed,
                           double blur_particle, float* out) {
     const double od_particle = density_max / n_particles_per_pixel;
-    StatsRng rng(seed);
-    for (int i = 0; i < npix; ++i) {
-        // probability_of_development = clip(density/density_max, 1e-6, 1-1e-6)
-        double p = static_cast<double>(density[i]) / density_max;
-        if (p < 1e-6) p = 1e-6;
-        else if (p > 1.0 - 1e-6) p = 1.0 - 1e-6;
 
-        double saturation = 1.0 - p * grain_uniformity * (1.0 - 1e-6);
-        double lam = n_particles_per_pixel / saturation;
-        int64_t seeds = fast_poisson_one(lam, rng);
-        int64_t dev = fast_binomial_one(seeds, p, rng);
-        out[i] = static_cast<float>(static_cast<double>(dev) * od_particle * saturation);
-    }
+    // PARALLEL, AND THREAD-INVARIANT. This stage was serial — the one per-pixel stage
+    // that did not fan out — and it dominates a full-resolution render (measured: 66.8 s
+    // of a 12 MP simulate on one core, vs ~1.3 s for everything else combined).
+    //
+    // It stayed serial because it walks a seeded RNG in pixel order, and parallel_for's
+    // chunk boundaries depend on the WORKER COUNT — so seeding per chunk would make the
+    // output depend on how many threads ran, breaking test_parallel.
+    //
+    // So the RNG is re-anchored to FIXED blocks instead. Block b always covers the same
+    // pixels and is always seeded from b, whichever chunk happens to execute it; a block
+    // is owned by the chunk containing its FIRST pixel, and chunks partition [0, npix),
+    // so every block runs exactly once. Output is therefore identical for any worker
+    // count — which is the property the parity gate actually requires.
+    //
+    // This DOES change the grain field versus the old serial stream. That is safe here:
+    // the parity goldens are generated with grain_active = 0 (see test_simulate_e2e),
+    // and the places that do enable grain assert REPRODUCIBILITY (an identical repeat
+    // must produce identical bytes), which fixed block seeding preserves exactly.
+    const int nblocks = (npix + kGrainBlockPixels - 1) / kGrainBlockPixels;
+    spk::parallel_for(0, npix, [&](int p0, int p1) {
+        const int first = (p0 + kGrainBlockPixels - 1) / kGrainBlockPixels;
+        for (int b = first; b < nblocks && b * kGrainBlockPixels < p1; ++b) {
+            const int i0 = b * kGrainBlockPixels;
+            const int i1 = std::min(i0 + kGrainBlockPixels, npix);
+            StatsRng rng(grain_block_seed(seed, b));
+            for (int i = i0; i < i1; ++i) {
+                // probability_of_development = clip(density/density_max, 1e-6, 1-1e-6)
+                double p = static_cast<double>(density[i]) / density_max;
+                if (p < 1e-6) p = 1e-6;
+                else if (p > 1.0 - 1e-6) p = 1.0 - 1e-6;
+
+                double saturation = 1.0 - p * grain_uniformity * (1.0 - 1e-6);
+                double lam = n_particles_per_pixel / saturation;
+                int64_t seeds = fast_poisson_one(lam, rng);
+                int64_t dev = fast_binomial_one(seeds, p, rng);
+                out[i] = static_cast<float>(static_cast<double>(dev) * od_particle * saturation);
+            }
+        }
+    });
 
     // Per-particle dye-cloud blur: grain.py uses
     //   grain = fast_gaussian_filter(grain, blur_particle*sqrt(od_particle))

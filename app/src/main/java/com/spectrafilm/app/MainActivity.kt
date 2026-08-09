@@ -199,9 +199,9 @@ class MainActivity : ComponentActivity() {
                         onOpenCamera = { screen = Screen.CAMERA },
                     )
                 }
-                Screen.CAMERA -> NavScaffold("Camera", onBack = { screen = Screen.EDITOR }) {
-                    CameraScreen()
-                }
+                // Full-bleed, no NavScaffold: a title bar over a viewfinder is dead space,
+                // and the system back gesture already returns to the editor (BackHandler above).
+                Screen.CAMERA -> CameraScreen()
                 Screen.DIAGNOSTICS -> NavScaffold("Diagnostics", onBack = { screen = Screen.SETTINGS }) {
                     DiagnosticsScreen()
                 }
@@ -362,6 +362,14 @@ class MainActivity : ComponentActivity() {
         // Set by loadSource when a compressed (lossy/JPEG-XL) DNG fell back to the platform
         // ImageDecoder. Drives a one-shot snackbar (a render path can't show UI directly).
         var dngFallbackNotice by remember { mutableStateOf(false) }
+        // PERSISTENT, not a one-shot snackbar. When LibRaw cannot decode a RAW (Samsung
+        // Expert RAW writes lossy-JPEG DNG 1.6, which it rejects) the app falls back to the
+        // platform decoder, and that returns DISPLAY-REFERRED pixels — already tone-mapped
+        // and gamma-encoded. The engine is a radiometric simulation that assumes
+        // scene-linear light, so the film simulation is simply wrong for such a file: harsh,
+        // over-saturated, crushed. That is far too consequential to announce in a toast the
+        // user may never see, so it stays on screen for as long as the file is loaded.
+        var sourceIsDisplayReferred by remember { mutableStateOf(false) }
 
         // LUT export
         var bakingLut by remember { mutableStateOf(false) }
@@ -597,6 +605,7 @@ class MainActivity : ComponentActivity() {
             ActivityResultContracts.PickVisualMedia()
         ) { uri ->
             if (uri != null) {
+                sourceIsDisplayReferred = false
                 sourceUri = uri; sourceKind = SourceKind.PHOTO; sourceName = "picked photo"
                 rotation = SourceRotation.NONE
                 status = "photo selected"; previewTick++
@@ -630,10 +639,12 @@ class MainActivity : ComponentActivity() {
                         // fall back to a lossy display-referred decode). RAW/DNG and ambiguous
                         // content URIs (e.g. MIUI document IDs with no extension) fall through to
                         // the RAW path below, so a genuine DNG is never misrouted.
+                        sourceIsDisplayReferred = false
                         sourceUri = uri; sourceKind = SourceKind.PHOTO
                         sourceName = "picked photo"
                         status = "photo selected"; previewTick++
                     } else {
+                        sourceIsDisplayReferred = false
                         sourceUri = uri; sourceKind = SourceKind.RAW
                         sourceName = "RAW: ${name.substringAfterLast('/')}"
                         status = "RAW selected"; previewTick++
@@ -718,6 +729,7 @@ class MainActivity : ComponentActivity() {
                             // Compressed Expert-RAW DNG: platform decoder fallback, which
                             // does NOT auto-upright DNGs -> apply the EXIF baseline.
                             dngFallbackNotice = true
+                            sourceIsDisplayReferred = true
                             applyExifBaseline = true
                             decodeViaPlatform(ctx, uri!!, maxEdge)
                         }
@@ -725,6 +737,7 @@ class MainActivity : ComponentActivity() {
                             // Any other LibRaw decode verdict: still try the downsampling
                             // platform decoder rather than failing the load outright.
                             dngFallbackNotice = true
+                            sourceIsDisplayReferred = true
                             applyExifBaseline = true
                             decodeViaPlatform(ctx, uri!!, maxEdge)
                         }
@@ -734,6 +747,7 @@ class MainActivity : ComponentActivity() {
                     // the platform decoder before giving up (e.g. an untyped error on a
                     // lossy DNG with no typed status).
                     dngFallbackNotice = true
+                    sourceIsDisplayReferred = true
                     applyExifBaseline = true
                     decodeViaPlatform(ctx, uri!!, maxEdge)
                 }
@@ -1283,6 +1297,8 @@ class MainActivity : ComponentActivity() {
                 )
 
                 // --- PREVIEW (pinned, weight) ---
+                if (sourceIsDisplayReferred) DisplayReferredBanner()
+
                 Box(
                     Modifier
                         .fillMaxWidth()
@@ -1817,6 +1833,46 @@ class MainActivity : ComponentActivity() {
     // ---------------------------------------------------------------------------
     // New Lightroom-style chrome
     // ---------------------------------------------------------------------------
+
+    /**
+     * Shown for as long as a display-referred source is loaded.
+     *
+     * LibRaw rejects some compressed RAWs — notably Samsung Expert RAW, which writes
+     * lossy-JPEG DNG 1.6 — and the app falls back to the platform decoder. That decoder
+     * returns pixels that are already tone-mapped and gamma-encoded. The engine is a
+     * RADIOMETRIC simulation: the linear pixel value IS an irradiance, which then meets
+     * the film's log-sensitivity curves. Feeding it display-referred data means the
+     * reconstructed spectra are wrong, so the render comes out harsh, over-saturated and
+     * crushed — and nothing in the UI would otherwise explain why.
+     *
+     * Deliberately a persistent banner rather than the transient snackbar this used to
+     * be: the consequence lasts as long as the file does.
+     */
+    @Composable
+    private fun DisplayReferredBanner() {
+        Surface(
+            color = Color(0xFF5A3A00),
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp),
+            shape = RoundedCornerShape(8.dp),
+        ) {
+            Column(Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
+                Text(
+                    "Reduced quality: RAW could not be decoded",
+                    color = Color(0xFFFFD48A),
+                    style = MaterialTheme.typography.labelLarge,
+                )
+                Text(
+                    "This file fell back to the system decoder, which returns already " +
+                        "processed (display-referred) pixels rather than raw sensor data. " +
+                        "The film simulation expects scene-linear light, so colour and " +
+                        "contrast will look harsh and over-saturated. Samsung Expert RAW " +
+                        "DNGs are affected; most other RAW formats decode natively.",
+                    color = Color(0xFFF0DCC0),
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
+        }
+    }
 
     @Composable
     private fun EditorTopBar(

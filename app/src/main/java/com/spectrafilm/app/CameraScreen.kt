@@ -24,6 +24,7 @@ import android.view.Surface
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.snapping.rememberSnapFlingBehavior
@@ -39,6 +40,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.LazyRow
@@ -53,13 +55,17 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalConfiguration
@@ -76,10 +82,14 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlin.math.abs
+import kotlin.math.roundToInt
 
 private val SELECTED = Color.White
 private val UNSELECTED = Color(0xFF8A8A8A)
-private val STOCK_ITEM_WIDTH = 170.dp
+// Narrow enough that the previous/next stock stay readable either side of the centred
+// one. Wider items pushed the neighbours off the edges entirely.
+private val STOCK_ITEM_WIDTH = 124.dp
+private val FOCUS_ITEM_WIDTH = 74.dp
 
 @Composable
 fun CameraScreen() {
@@ -127,7 +137,7 @@ private fun CameraScreenSupported() {
         return
     }
     var lens by remember {
-        mutableStateOf(lenses.firstOrNull { it.label == "1x" } ?: lenses.first())
+        mutableStateOf(lenses.minByOrNull { abs(it.equivFocalMm - 24) } ?: lenses.first())
     }
 
     // --- film stocks, split by process --------------------------------------------------
@@ -168,6 +178,11 @@ private fun CameraScreenSupported() {
     var lut by remember { mutableStateOf<CubeLut?>(null) }
     var gain by remember { mutableFloatStateOf(1f) }
     var aeLocked by remember { mutableStateOf(false) }
+    var manualFocus by remember { mutableStateOf(false) }
+    // Focus as a CONTINUOUS value in dioptres (1/m), not a step index. Dioptres are the
+    // space focus physically moves in, so dragging is perceptually even across the range;
+    // metres would spend most of the throw between 5 m and infinity where nothing changes.
+    var focusDiopters by remember(lens) { mutableFloatStateOf(0f) }
 
     var engine by remember { mutableStateOf<SpektraEngine?>(null) }
     LaunchedEffect(Unit) {
@@ -176,6 +191,26 @@ private fun CameraScreenSupported() {
 
     val session = remember { CameraSession(ctx) { msg -> error = msg } }
     DisposableEffect(Unit) { onDispose { session.close() } }
+
+    // The app theme is light, so the system navigation bar renders as a white strip under
+    // a black viewfinder. Paint it black for the camera only, and restore on the way out.
+    val window = (ctx as? android.app.Activity)?.window
+    DisposableEffect(window) {
+        @Suppress("DEPRECATION")
+        val previous = window?.navigationBarColor
+        @Suppress("DEPRECATION")
+        window?.navigationBarColor = android.graphics.Color.BLACK
+        val controller = window?.let {
+            androidx.core.view.WindowCompat.getInsetsController(it, it.decorView)
+        }
+        val hadLightIcons = controller?.isAppearanceLightNavigationBars
+        controller?.isAppearanceLightNavigationBars = false
+        onDispose {
+            @Suppress("DEPRECATION")
+            if (previous != null) window.navigationBarColor = previous
+            if (hadLightIcons != null) controller?.isAppearanceLightNavigationBars = hadLightIcons
+        }
+    }
 
     val rotation = remember(lens) {
         val sensor = CameraInventory.sensorOrientation(ctx, lens.logicalId)
@@ -191,10 +226,16 @@ private fun CameraScreenSupported() {
     val uvRotation = 0
 
     var surface by remember { mutableStateOf<Surface?>(null) }
+    // The session decides whether P3 was actually granted; the shader must only use the P3
+    // matrix if it really was, so this is read back rather than assumed.
+    var wideGamut by remember { mutableStateOf(false) }
     LaunchedEffect(surface, lens) {
         val s = surface ?: return@LaunchedEffect
         session.open(lens, s, previewSize)
         aeLocked = false
+        manualFocus = false
+        kotlinx.coroutines.delay(400)
+        wideGamut = session.previewIsDisplayP3
     }
 
     // Bake only once the scroll settles — mid-swipe the selection changes every frame, and
@@ -242,6 +283,7 @@ private fun CameraScreenSupported() {
         CameraGlPreview(
             uvRotationDegrees = uvRotation,
             displayAspect = displayAspect,
+            wideGamut = wideGamut,
             bufferWidth = previewSize.width,
             bufferHeight = previewSize.height,
             modifier = Modifier.fillMaxSize(),
@@ -250,6 +292,33 @@ private fun CameraScreenSupported() {
             onSurfaceReady = { s -> surface = s },
             onUnavailable = { error = "GPU viewfinder unavailable" },
         )
+
+        // Top-right controls, sitting in the black bar above the viewfinder.
+        Row(
+            Modifier.align(Alignment.TopEnd).statusBarsPadding().padding(top = 6.dp, end = 16.dp),
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            TwoToneToggle(
+                left = "AE", right = "AE-L", rightActive = aeLocked,
+                onClick = {
+                    if (aeLocked) {
+                        session.setAeLock(false); aeLocked = false
+                    } else {
+                        meterAndLock()
+                    }
+                },
+            )
+            if (lens.supportsManualFocus) {
+                TwoToneToggle(
+                    left = "AF", right = "MF", rightActive = manualFocus,
+                    onClick = {
+                        manualFocus = !manualFocus
+                        session.setFocus(manualFocus, focusDiopters)
+                    },
+                )
+            }
+        }
 
         Column(
             Modifier.align(Alignment.BottomCenter).fillMaxWidth()
@@ -263,14 +332,16 @@ private fun CameraScreenSupported() {
                 Text(it, color = Color(0xFFFF8A80), style = MaterialTheme.typography.bodySmall)
             }
 
-            ProcessToggle(slideMode = slideMode, onToggle = { slideMode = !slideMode })
-
-            StockScroller(
-                stocks = stocks,
-                selectedIndex = stockIndex,
-                listState = listState,
-                onPick = { i -> scope.launch { listState.animateScrollToItem(i) } },
-            )
+            if (manualFocus) {
+                FocusWheel(
+                    minDiopters = lens.minFocusDiopters,
+                    diopters = focusDiopters,
+                    onChange = { d ->
+                        focusDiopters = d
+                        session.setFocus(true, d)
+                    },
+                )
+            }
 
             Row(
                 verticalAlignment = Alignment.CenterVertically,
@@ -279,41 +350,147 @@ private fun CameraScreenSupported() {
                 for (l in lenses) {
                     LensChip(label = l.label, selected = l == lens, onClick = { lens = l })
                 }
-                AeChip(locked = aeLocked, onClick = {
-                    if (aeLocked) { session.setAeLock(false); aeLocked = false } else meterAndLock()
-                })
             }
+
+            StockScroller(
+                stocks = stocks,
+                selectedIndex = stockIndex,
+                listState = listState,
+                onPick = { i -> scope.launch { listState.animateScrollToItem(i) } },
+            )
+
+            ProcessToggle(slideMode = slideMode, onToggle = { slideMode = !slideMode })
 
             ShutterButton(onClick = { error = "Capture arrives in the next step" })
         }
     }
 }
 
-/** NEGATIVE / SLIDE, two-tone like a stock camera's mode label. */
+/**
+ * Continuous manual focus, modelled on a lens barrel rather than a list of presets.
+ *
+ * Drag anywhere along it and focus follows the finger LIVE — no detents, no waiting for a
+ * release to commit. The throw is deliberately long (the full range spans about 2.2 screen
+ * widths) so fine adjustment is possible near the close end, the way a long-throw vintage
+ * helicoid behaves. The scale runs CLOSE on the left to INFINITY on the right, so dragging
+ * left brings infinity toward the centre marker.
+ *
+ * Ticks are drawn in dioptre space so their spacing matches the actual focus travel.
+ */
 @Composable
-private fun ProcessToggle(slideMode: Boolean, onToggle: () -> Unit) {
+private fun FocusWheel(minDiopters: Float, diopters: Float, onChange: (Float) -> Unit) {
+    val current = rememberUpdatedState(diopters)
+    val cb = rememberUpdatedState(onChange)
+    var widthPx by remember { mutableFloatStateOf(1f) }
+
+    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+        Text(
+            focusLabel(diopters),
+            color = SELECTED,
+            fontSize = 12.sp,
+            fontWeight = FontWeight.Bold,
+            letterSpacing = 1.sp,
+        )
+        Canvas(
+            Modifier
+                .fillMaxWidth()
+                .height(30.dp)
+                .onSizeChanged { widthPx = it.width.toFloat().coerceAtLeast(1f) }
+                .pointerInput(minDiopters) {
+                    detectHorizontalDragGestures { _, dx ->
+                        if (minDiopters <= 0f) return@detectHorizontalDragGestures
+                        val perPx = minDiopters / (widthPx * 2.2f)
+                        val next = (current.value + dx * perPx).coerceIn(0f, minDiopters)
+                        cb.value(next)
+                    }
+                }
+        ) {
+            if (minDiopters <= 0f) return@Canvas
+            val perPx = minDiopters / (widthPx * 2.2f)
+            val cx = size.width / 2f
+            val midY = size.height / 2f
+            // Minor ticks every 1/40 of the range, major every 1/8 — dense enough to read
+            // as movement under the finger without becoming a grey smear.
+            val minor = minDiopters / 40f
+            val major = minDiopters / 8f
+            var k = 0
+            val firstD = current.value - cx * perPx
+            var d = kotlin.math.ceil(firstD / minor) * minor
+            while (d <= current.value + cx * perPx) {
+                if (d >= 0f && d <= minDiopters) {
+                    val x = cx - (d - current.value) / perPx
+                    val isMajor = kotlin.math.abs(d / major - (d / major).toInt()) < 0.02f
+                    val h = if (isMajor) size.height * 0.42f else size.height * 0.22f
+                    drawLine(
+                        color = if (isMajor) Color(0xFFBBBBBB) else Color(0xFF6A6A6A),
+                        start = androidx.compose.ui.geometry.Offset(x, midY - h),
+                        end = androidx.compose.ui.geometry.Offset(x, midY + h),
+                        strokeWidth = 2f,
+                    )
+                }
+                d += minor
+                if (++k > 400) break
+            }
+            // Fixed centre marker: the point the current distance is read against.
+            drawLine(
+                color = Color.White,
+                start = androidx.compose.ui.geometry.Offset(cx, midY - size.height * 0.5f),
+                end = androidx.compose.ui.geometry.Offset(cx, midY + size.height * 0.5f),
+                strokeWidth = 4f,
+            )
+        }
+    }
+}
+
+private fun focusLabel(diopters: Float): String {
+    if (diopters <= 0.0001f) return "\u221e"
+    val metres = 1f / diopters
+    return if (metres >= 1f) {
+        val v = (metres * 10f).roundToInt() / 10f
+        if (v % 1f == 0f) "${v.toInt()} m" else "$v m"
+    } else {
+        "${(metres * 100f).roundToInt()} cm"
+    }
+}
+
+/** NEGATIVE / SLIDE. */
+@Composable
+private fun ProcessToggle(slideMode: Boolean, onToggle: () -> Unit) =
+    TwoToneToggle("NEGATIVE", "SLIDE", rightActive = slideMode, onClick = onToggle)
+
+/**
+ * A stock-camera style two-tone label: the active half white and bold, the other grey.
+ * Shared by NEGATIVE/SLIDE, AE/AE-L and AF/MF so they all read as one control idiom.
+ */
+@Composable
+private fun TwoToneToggle(
+    left: String,
+    right: String,
+    rightActive: Boolean,
+    onClick: () -> Unit,
+) {
     Text(
         buildAnnotatedString {
             withStyle(
                 SpanStyle(
-                    color = if (!slideMode) SELECTED else UNSELECTED,
-                    fontWeight = if (!slideMode) FontWeight.Bold else FontWeight.Normal,
+                    color = if (!rightActive) SELECTED else UNSELECTED,
+                    fontWeight = if (!rightActive) FontWeight.Bold else FontWeight.Normal,
                 )
-            ) { append("NEGATIVE") }
-            withStyle(SpanStyle(color = UNSELECTED)) { append("   /   ") }
+            ) { append(left) }
+            withStyle(SpanStyle(color = UNSELECTED)) { append("  /  ") }
             withStyle(
                 SpanStyle(
-                    color = if (slideMode) SELECTED else UNSELECTED,
-                    fontWeight = if (slideMode) FontWeight.Bold else FontWeight.Normal,
+                    color = if (rightActive) SELECTED else UNSELECTED,
+                    fontWeight = if (rightActive) FontWeight.Bold else FontWeight.Normal,
                 )
-            ) { append("SLIDE") }
+            ) { append(right) }
         },
-        fontSize = 12.sp,
-        letterSpacing = 1.sp,
+        fontSize = 10.sp,
+        letterSpacing = 0.5.sp,
         modifier = Modifier
-            .clip(RoundedCornerShape(14.dp))
-            .clickable(onClick = onToggle)
-            .padding(horizontal = 14.dp, vertical = 6.dp),
+            .clip(RoundedCornerShape(12.dp))
+            .clickable(onClick = onClick)
+            .padding(horizontal = 8.dp, vertical = 4.dp),
     )
 }
 
@@ -357,30 +534,12 @@ private fun StockScroller(
 @Composable
 private fun LensChip(label: String, selected: Boolean, onClick: () -> Unit) {
     Box(
-        Modifier.size(38.dp).clip(RoundedCornerShape(19.dp))
+        Modifier.size(46.dp).clip(RoundedCornerShape(23.dp))
             .background(if (selected) Color(0x33FFFFFF) else Color.Transparent)
             .clickable(onClick = onClick),
         contentAlignment = Alignment.Center,
     ) {
         Text(label, color = if (selected) SELECTED else UNSELECTED, fontSize = 11.sp)
-    }
-}
-
-@Composable
-private fun AeChip(locked: Boolean, onClick: () -> Unit) {
-    Box(
-        Modifier.height(38.dp).clip(RoundedCornerShape(19.dp))
-            .background(if (locked) Color(0x33FFFFFF) else Color.Transparent)
-            .clickable(onClick = onClick)
-            .padding(horizontal = 12.dp),
-        contentAlignment = Alignment.Center,
-    ) {
-        Text(
-            if (locked) "AE-L" else "AE",
-            color = if (locked) SELECTED else UNSELECTED,
-            fontSize = 11.sp,
-            letterSpacing = 1.sp,
-        )
     }
 }
 

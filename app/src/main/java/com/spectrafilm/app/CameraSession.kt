@@ -50,16 +50,22 @@ import android.util.Size
 import android.view.Surface
 import androidx.core.content.ContextCompat
 import java.util.concurrent.Executor
+import kotlin.math.roundToInt
 
 /** One selectable lens: a physical camera id behind [logicalId], with its RAW capability. */
 data class LensOption(
     val logicalId: String,
     val physicalId: String?,
     val focalMm: Float,
+    /** 35mm-equivalent focal length, rounded — what a photographer actually reads. */
+    val equivFocalMm: Int,
     val label: String,
     val rawSize: Size?,
     val hardwareLevel: Int,
+    /** Closest focus in diopters (1/m); 0 = fixed-focus lens, so no manual focus. */
+    val minFocusDiopters: Float = 0f,
 ) {
+    val supportsManualFocus: Boolean get() = minFocusDiopters > 0f
     val supportsRaw: Boolean get() = rawSize != null
 }
 
@@ -110,17 +116,39 @@ object CameraInventory {
         val rawSize = runCatching { map?.getOutputSizes(ImageFormat.RAW_SENSOR) }
             .getOrNull()?.maxByOrNull { it.width.toLong() * it.height }
         val level = c.get(CameraCharacteristics.INFO_SUPPORTED_HARDWARE_LEVEL) ?: -1
+        val equiv = equivalentFocal(c, focal)
+        // Diopters (1/m) at the closest focus. 0 means a fixed-focus lens, which cannot be
+        // focused manually — the UI hides MF for those rather than offering a dead control.
+        val minFocus = c.get(CameraCharacteristics.LENS_INFO_MINIMUM_FOCUS_DISTANCE) ?: 0f
         return LensOption(
             logicalId = logicalId, physicalId = physId, focalMm = focal,
-            label = labelFor(focal), rawSize = rawSize, hardwareLevel = level,
+            equivFocalMm = equiv, label = "${equiv}mm", rawSize = rawSize,
+            hardwareLevel = level, minFocusDiopters = minFocus,
         )
     }
 
-    /** Human label from actual focal length — the shortest rear lens is the ultrawide. */
-    private fun labelFor(focalMm: Float): String = when {
-        focalMm < 3.5f -> "UW"
-        focalMm < 6.0f -> "1x"
-        else -> "Tele"
+    /**
+     * 35mm-equivalent focal length: actual focal x crop factor, where the crop factor is
+     * the 35mm frame diagonal (43.27 mm) over this sensor's diagonal.
+     *
+     * The physical size reported covers the FULL pixel array, but only the active array is
+     * imaged, so it is scaled by the active/pixel ratio first — otherwise a sensor that
+     * crops for stills reports a wider equivalent than it actually delivers.
+     */
+    private fun equivalentFocal(c: CameraCharacteristics, focalMm: Float): Int {
+        val phys = c.get(CameraCharacteristics.SENSOR_INFO_PHYSICAL_SIZE)
+        val pixels = c.get(CameraCharacteristics.SENSOR_INFO_PIXEL_ARRAY_SIZE)
+        val active = c.get(CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE)
+        if (phys == null || phys.width <= 0f || phys.height <= 0f) return focalMm.roundToInt()
+        var wMm = phys.width
+        var hMm = phys.height
+        if (pixels != null && active != null && pixels.width > 0 && pixels.height > 0) {
+            wMm *= active.width().toFloat() / pixels.width
+            hMm *= active.height().toFloat() / pixels.height
+        }
+        val diag = kotlin.math.hypot(wMm.toDouble(), hMm.toDouble())
+        if (diag <= 0.0) return focalMm.roundToInt()
+        return (focalMm * (43.2666 / diag)).roundToInt()
     }
 
     /** Sensor orientation (degrees) for the logical camera driving the stream. */
@@ -183,6 +211,20 @@ class CameraSession(
     @Volatile var aeLocked: Boolean = false
         private set
 
+    /**
+     * Whether the preview stream was negotiated as Display P3 rather than sRGB/BT.709.
+     * The viewfinder must use the matching primaries matrix — feeding P3 values through the
+     * sRGB matrix would under-saturate by as much as the reverse over-saturated.
+     */
+    @Volatile var previewIsDisplayP3: Boolean = false
+        private set
+
+    @Volatile var manualFocus: Boolean = false
+        private set
+
+    /** Focus distance in diopters (1/m). 0 = infinity. Only applied in manual mode. */
+    @Volatile private var focusDiopters: Float = 0f
+
     @SuppressLint("MissingPermission")  // caller gates on CameraInventory.hasPermission
     fun open(lens: LensOption, surface: Surface, previewSize: Size) {
         if (!CameraInventory.hasPermission(ctx)) { onError("camera permission not granted"); return }
@@ -224,6 +266,8 @@ class CameraSession(
             if (lens.physicalId != null) setPhysicalCameraId(lens.physicalId)
         }
         val executor = Executor { r -> h.post(r) }
+        val wideGamut = displayP3Supported(lens)
+        previewIsDisplayP3 = wideGamut
         val cb = object : CameraCaptureSession.StateCallback() {
             override fun onConfigured(s: CameraCaptureSession) {
                 session = s
@@ -231,6 +275,7 @@ class CameraSession(
                     addTarget(surface)
                     meterReader?.surface?.let { addTarget(it) }
                     applyIspDisables(this)
+                    applyFocus(this)
                     set(CaptureRequest.CONTROL_AE_LOCK, aeLocked)
                 }
                 request = b
@@ -245,9 +290,52 @@ class CameraSession(
             camera.createCaptureSession(
                 SessionConfiguration(
                     SessionConfiguration.SESSION_REGULAR, listOf(outCfg, meterCfg), executor, cb,
-                )
+                ).apply {
+                    // WIDER PRIMARIES, SAME EXPOSURE. Unlike the HLG10 attempt, a colour-space
+                    // profile carries no HDR reference levels — it changes only the primaries,
+                    // so the session's exposure semantics are untouched. Requested only when
+                    // BOTH outputs support it at STANDARD dynamic range; one session cannot mix.
+                    // Explicit setter, not the property: SessionConfiguration's getter
+                    // returns ColorSpace while its setter takes ColorSpace.Named, so Kotlin
+                    // exposes it as a read-only property.
+                    if (wideGamut && Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                        setColorSpace(android.graphics.ColorSpace.Named.DISPLAY_P3)
+                    }
+                }
             )
         }.onFailure { onError("createCaptureSession failed: ${it.message}") }
+    }
+
+    /**
+     * Whether Display P3 can be requested for BOTH session outputs at STANDARD dynamic
+     * range. The camera stream is otherwise BT.709/sRGB, which CLIPS saturated colour
+     * before the spectral engine ever sees it — and a clipped chromaticity makes the
+     * spectral reconstruction wrong, not merely the displayed colour.
+     *
+     * Logs what it found: a Camera2 capability is not a Camera2 result, and this feature
+     * has been bitten by assuming otherwise more than once.
+     */
+    private fun displayP3Supported(lens: LensOption): Boolean {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.UPSIDE_DOWN_CAKE) return false
+        val mgr = ctx.getSystemService(Context.CAMERA_SERVICE) as CameraManager
+        val chars = runCatching {
+            mgr.getCameraCharacteristics(lens.physicalId ?: lens.logicalId)
+        }.getOrNull() ?: return false
+        val profiles = chars.get(CameraCharacteristics.REQUEST_AVAILABLE_COLOR_SPACE_PROFILES)
+            ?: run { Diag.i("camera gamut: no colour-space profiles -> sRGB"); return false }
+        val p3 = android.graphics.ColorSpace.Named.DISPLAY_P3
+        val std = android.hardware.camera2.params.DynamicRangeProfiles.STANDARD
+        // The SurfaceTexture viewfinder is PRIVATE; the metering reader is YUV_420_888.
+        val ok = listOf(ImageFormat.PRIVATE, ImageFormat.YUV_420_888).all { fmt ->
+            val spaces = runCatching {
+                profiles.getSupportedColorSpacesForDynamicRange(fmt, std)
+            }.getOrDefault(emptySet())
+            val has = p3 in spaces
+            Diag.i("camera gamut: format=$fmt standard-range spaces=$spaces p3=$has")
+            has
+        }
+        Diag.i("camera gamut: ${if (ok) "requesting DISPLAY_P3" else "staying sRGB/BT.709"}")
+        return ok
     }
 
     /**
@@ -298,6 +386,10 @@ class CameraSession(
      * luminance is needed: measure_autoexposure_ev reduces RGB to Y before metering, so
      * feeding a neutral (Y,Y,Y) triple yields the same EV as the full-colour frame
      * would, with no YUV->RGB matrix and no colour-space assumptions to get wrong.
+     *
+     * This is also why no sRGB->ProPhoto conversion is applied here, unlike the viewfinder
+     * shader: that matrix's rows each sum to 1, so a neutral triple maps to itself. The
+     * primaries only matter for chromatic pixels, and metering never sees any.
      */
     private fun captureLuma(reader: ImageReader) {
         val img = runCatching { reader.acquireLatestImage() }.getOrNull() ?: return
@@ -345,6 +437,32 @@ class CameraSession(
             f.put(i * 3, v); f.put(i * 3 + 1, v); f.put(i * 3 + 2, v)
         }
         return com.spectrafilm.engine.LinearImage(buf, w, h, colorSpace = "ProPhoto RGB")
+    }
+
+    /**
+     * Switch between continuous autofocus and manual focus at [diopters] (1/m; 0 =
+     * infinity). Manual focus needs CONTROL_AF_MODE off — leaving AF running would have
+     * the lens hunt straight back off the chosen distance.
+     */
+    fun setFocus(manual: Boolean, diopters: Float) {
+        manualFocus = manual
+        focusDiopters = diopters
+        val b = request ?: return
+        val s = session ?: return
+        val h = handler ?: return
+        applyFocus(b)
+        runCatching { s.setRepeatingRequest(b.build(), null, h) }
+            .onFailure { onError("focus update failed: ${it.message}") }
+    }
+
+    private fun applyFocus(b: CaptureRequest.Builder) {
+        if (manualFocus) {
+            b.set(CaptureRequest.CONTROL_AF_MODE, CameraMetadata.CONTROL_AF_MODE_OFF)
+            b.set(CaptureRequest.LENS_FOCUS_DISTANCE, focusDiopters)
+        } else {
+            b.set(CaptureRequest.CONTROL_AF_MODE,
+                  CameraMetadata.CONTROL_AF_MODE_CONTINUOUS_PICTURE)
+        }
     }
 
     fun close() {

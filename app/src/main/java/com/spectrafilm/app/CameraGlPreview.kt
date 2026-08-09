@@ -69,6 +69,7 @@ import javax.microedition.khronos.opengles.GL10
 fun CameraGlPreview(
     uvRotationDegrees: Int,
     displayAspect: Float,
+    wideGamut: Boolean,
     bufferWidth: Int,
     bufferHeight: Int,
     modifier: Modifier = Modifier,
@@ -87,6 +88,7 @@ fun CameraGlPreview(
     }
     renderer.setBufferSize(bufferWidth, bufferHeight)
     renderer.setDisplayAspect(displayAspect)
+    renderer.setWideGamut(wideGamut)
     DisposableEffect(Unit) { onDispose { renderer.release() } }
     AndroidView(
         modifier = modifier,
@@ -142,6 +144,9 @@ private class CameraLutRenderer(
     // uvRotation assumed a landscape scene and stretched the portrait content to fit.
     @Volatile private var rotation = 0
     @Volatile private var displayAspect = 9f / 16f
+    // Set when the session negotiated Display P3 for the preview. Selects which primaries
+    // matrix converts the camera stream into the LUT's ProPhoto domain.
+    @Volatile private var wideGamut = false
     @Volatile private var gain = 1f
     @Volatile private var pendingLut: CubeLut? = null
     @Volatile private var haveLut = false
@@ -164,6 +169,8 @@ private class CameraLutRenderer(
     fun setDisplayAspect(a: Float) {
         if (a.isFinite() && a > 0f) displayAspect = a
     }
+
+    fun setWideGamut(v: Boolean) { wideGamut = v }
 
     fun submit(rotationDegrees: Int, lut: CubeLut?, exposureGain: Float) {
         rotation = ((rotationDegrees % 360) + 360) % 360
@@ -272,6 +279,7 @@ private class CameraLutRenderer(
         GLES30.glUniform1i(GLES30.glGetUniformLocation(program, "uLut"), 1)
         GLES30.glUniform1i(GLES30.glGetUniformLocation(program, "uUseLut"), if (haveLut) 1 else 0)
         GLES30.glUniform1f(GLES30.glGetUniformLocation(program, "uExposureGain"), gain)
+        GLES30.glUniform1i(GLES30.glGetUniformLocation(program, "uWideGamut"), if (wideGamut) 1 else 0)
         GLES30.glUniformMatrix4fv(
             GLES30.glGetUniformLocation(program, "uTexMatrix"), 1, false, texMatrix, 0,
         )
@@ -382,6 +390,7 @@ private class CameraLutRenderer(
             uniform samplerExternalOES uCam;
             uniform sampler3D uLut;
             uniform int uUseLut;
+            uniform int uWideGamut;
             uniform float uExposureGain;
             out vec4 fragColor;
             // Cheap per-pixel hash for dithering. Static (no time term) so the noise does
@@ -391,6 +400,30 @@ private class CameraLutRenderer(
                 p3 += dot(p3, p3.yzx + 33.33);
                 return fract((p3.x + p3.y) * p3.z);
             }
+            // Camera primaries -> linear ProPhoto (D50), the LUT's input domain. Both are
+            //   M = [ProPhoto XYZ->RGB (D50)] . [Bradford CAT D65->D50] . [source RGB->XYZ]
+            // and both have rows summing to 1, so neutrals stay neutral and luminance is
+            // preserved: this is a pure chromaticity correction, never an exposure change.
+            //
+            // The sRGB matrix is identical to ImagePipeline.SRGB_TO_PROPHOTO so the camera
+            // and the import path agree exactly. Using the WRONG one of these is not a
+            // subtle error — it mis-saturates every pixel, and because the engine is
+            // spectral it then reconstructs light that was never there.
+            vec3 toProPhoto(vec3 c) {
+                if (uWideGamut == 1) {
+                    // Display P3 (D65) -> ProPhoto (D50)
+                    return vec3(
+                        dot(c, vec3( 0.6316600, 0.2138250, 0.1544190)),
+                        dot(c, vec3( 0.0831780, 0.8859070, 0.0309430)),
+                        dot(c, vec3(-0.0012710, 0.0507510, 0.9507290)));
+                }
+                // sRGB / BT.709 (D65) -> ProPhoto (D50)
+                return vec3(
+                    dot(c, vec3(0.5290825, 0.3303437, 0.1405738)),
+                    dot(c, vec3(0.0982640, 0.8734031, 0.0283329)),
+                    dot(c, vec3(0.0167029, 0.1176946, 0.8656026)));
+            }
+
             void main() {
                 vec3 cam = texture(uCam, vUv).rgb;
                 if (uUseLut == 0) { fragColor = vec4(cam, 1.0); return; }
@@ -403,7 +436,13 @@ private class CameraLutRenderer(
                 // the whole session about a stop down to reserve specular headroom, which
                 // has to be modelled properly). Recorded in docs/CAMERA_PLAN.md.
                 float d = (hash12(gl_FragCoord.xy) - 0.5) * (1.0 / 255.0);
-                vec3 lin = clamp((cam + d) * uExposureGain, 0.0, 1.0);
+                // Primaries FIRST, then gain, then clamp into the LUT's [0,1] domain. The
+                // camera delivers linear sRGB primaries; feeding those to a ProPhoto-domain
+                // LUT reads every colour as more saturated than it is, because ProPhoto's
+                // primaries are far wider — the engine then reconstructs a more spectrally
+                // pure light than existed and renders it accordingly.
+                vec3 scene = toProPhoto(cam + d);
+                vec3 lin = clamp(scene * uExposureGain, 0.0, 1.0);
                 fragColor = vec4(texture(uLut, vec3(lin.b, lin.g, lin.r)).rgb, 1.0);
             }
         """
