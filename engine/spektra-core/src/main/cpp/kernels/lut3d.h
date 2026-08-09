@@ -30,6 +30,7 @@
 #define SPEKTRA_KERNELS_LUT3D_H_
 
 #include <cstddef>
+#include <memory>
 #include <vector>
 
 namespace spk {
@@ -72,6 +73,39 @@ void apply_lut_3d_pchip(const Lut3D& lut, const double* data, int w, int h,
 // equivalent to apply_lut_3d on normalized input). `norm` and `out` are h*w*3.
 void apply_lut_3d_pchip_normalized(const Lut3D& lut, const double* norm, int w,
                                    int h, double* out);
+
+// ---------------------------------------------------------------------------
+// PREPARED LUT (memoization support)
+//
+// apply_lut_3d_pchip* internally derives, from the LUT alone, the per-axis
+// monotone slopes and the per-cell value clamps that
+// _prepare_lut_pchip_3d_impl produces — an O(steps^3) step redone on every
+// call. Both that prepare AND the build above are pure functions of their
+// inputs, so a caller that re-renders with unchanged LUT inputs can hold the
+// pair and skip both (see kernels/lut3d_cache.h). This is a MEMO, not an
+// approximation: applying a prepared LUT runs the identical interpolator over
+// identical state, so the output is byte-identical to
+// apply_lut_3d_pchip(lut, ...).
+//
+// The prepared state's layout is an implementation detail — the type is opaque
+// and instances are handed out as shared_ptr so a cache may evict an entry
+// while a render still holds it.
+// ---------------------------------------------------------------------------
+struct PreparedLut3D;
+
+// Take ownership of `lut` and precompute its PCHIP state. The result is
+// immutable and safe to share across threads.
+std::shared_ptr<const PreparedLut3D> prepare_lut_3d_pchip(Lut3D lut);
+
+// Apply a prepared LUT to RAW (un-normalized) data, exactly as
+// apply_lut_3d_pchip does: normalize by (data - xmin)/(xmax - xmin), then
+// interpolate. `data` and `out` are h*w*3.
+void apply_prepared_lut_3d_pchip(const PreparedLut3D& prepared,
+                                 const double* data, int w, int h, double* out);
+
+// Approximate heap footprint of a prepared LUT (the LUT samples plus the
+// precomputed slope/clamp tables). Used by the cache to bound its budget.
+size_t prepared_lut_3d_bytes(const PreparedLut3D& prepared);
 
 }  // namespace spk
 

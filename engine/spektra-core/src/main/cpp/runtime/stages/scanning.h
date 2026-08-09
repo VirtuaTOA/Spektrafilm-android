@@ -25,6 +25,10 @@
 
 namespace spk {
 
+// kernels/lut3d_cache.h — only a pointer is needed here, so it stays forward
+// declared rather than pulling <map>/<mutex>/<list> into every scanning.h user.
+class Lut3DCache;
+
 // Scan parameters for the scan_film route. The scan_portra milestone uses the
 // defaults below (sRGB output, CCTF on, no glare/blur/unsharp because spatial &
 // stochastic effects are deactivated). Kept as fields so callers can later wire
@@ -103,6 +107,14 @@ struct ScanningParams {
     bool use_lut = false;
     int lut_resolution = 32;
     double grain_density_min[3] = {0.07, 0.08, 0.12};
+
+    // OPTIONAL engine-level memo for the built LUT (kernels/lut3d_cache.h). PERF
+    // only: nullptr (the default — every direct caller and every parity test)
+    // builds the LUT inline exactly as before, and a non-null cache returns a LUT
+    // built by the same code from the same inputs, so the render is byte-identical
+    // either way. Only spk_engine passes one, so a preview does not rebuild the
+    // same 3D LUT on every frame.
+    Lut3DCache* lut_cache = nullptr;
 
     // Scanner BLACK/WHITE XYZ correction (color_reference.py::
     // black_white_xyz_correction): a scan-time tone anchor that maps the measured

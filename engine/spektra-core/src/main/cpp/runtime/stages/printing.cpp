@@ -13,10 +13,13 @@
 #include "runtime/stages/printing.h"
 
 #include <cmath>
+#include <memory>
+#include <string>
 #include <vector>
 
 #include "kernels/exp10.h"
 #include "kernels/lut3d.h"
+#include "kernels/lut3d_cache.h"
 #include "kernels/parallel.h"
 #include "model/density_curves.h"
 #include "model/diffusion.h"
@@ -176,14 +179,54 @@ void print_expose(const Profile& film, const Profile& print_profile,
         ctx.preflash_raw[0] = preflash_raw[0];
         ctx.preflash_raw[1] = preflash_raw[1];
         ctx.preflash_raw[2] = preflash_raw[2];
-        Lut3D lut =
-            build_lut_3d(xmin, xmax, steps, {}, &cmy_to_print_log_raw_fn, &ctx);
+
+        // PERF (kernels/lut3d_cache.h): with an engine cache attached, fetch the
+        // memoized build instead of redoing steps^3 spectral integrals every call.
+        // The key folds EVERY value cmy_to_print_log_raw_fn reads plus the grid
+        // that samples it, as raw IEEE-754 bytes:
+        //   - the FILM's channel_density + base_density spectra (the negative's dyes),
+        //   - the PRINT paper's sensitivity `sens` (10^log_sensitivity, nan_to_num) —
+        //     folding the derived array rather than the paper id captures the paper
+        //     exactly, whichever profile produced it,
+        //   - the enlarger's dichroic-filtered illuminant (all 81 bands; a superset
+        //     of the S read), which carries the neutral CC + y/m filter shifts,
+        //   - the midgray exposure factor, which carries exposure_compensation_ev
+        //     and the normalize/compensation branch,
+        //   - the constant preflash raw 3-vector, which carries preflash_exposure and
+        //     its own filter shifts,
+        //   - the resolved domain bounds xmin/xmax (nanmax of the film density_curves
+        //     and params.grain_density_min) and the clamped step count.
+        // Every one of those is a live user param, so none may be omitted. Anything
+        // added to EnlargerLutCtx later MUST be added here as well.
+        std::shared_ptr<const PreparedLut3D> prepared;
+        if (params.lut_cache) {
+            std::string key;
+            lut_key_append_tag(&key, "enl3d");
+            lut_key_append(&key, S);
+            lut_key_append(&key, film.channel_density.data(),
+                           film.channel_density.size());
+            lut_key_append(&key, film.base_density.data(),
+                           film.base_density.size());
+            lut_key_append(&key, sens.data(), sens.size());
+            lut_key_append(&key, params.filtered_illuminant, 81);
+            lut_key_append(&key, params.exposure_factor_midgray);
+            lut_key_append(&key, preflash_raw, 3);
+            lut_key_append(&key, xmin, 3);
+            lut_key_append(&key, xmax, 3);
+            lut_key_append(&key, steps);
+            prepared = params.lut_cache->get_or_build(
+                key, xmin, xmax, steps, &cmy_to_print_log_raw_fn, &ctx);
+        } else {
+            prepared = prepare_lut_3d_pchip(build_lut_3d(
+                xmin, xmax, steps, {}, &cmy_to_print_log_raw_fn, &ctx));
+        }
 
         lut_lr.resize(static_cast<size_t>(npix) * 3);
         std::vector<double> dens_d(static_cast<size_t>(npix) * 3);
         for (size_t i = 0; i < dens_d.size(); ++i)
             dens_d[i] = static_cast<double>(density_cmy[i]);
-        apply_lut_3d_pchip(lut, dens_d.data(), width, height, lut_lr.data());
+        apply_prepared_lut_3d_pchip(*prepared, dens_d.data(), width, height,
+                                    lut_lr.data());
     }
 
     // The Python reference runs the whole spectral chain in float64 and stores

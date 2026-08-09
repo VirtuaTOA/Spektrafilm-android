@@ -26,6 +26,10 @@
 
 namespace spk {
 
+// kernels/lut3d_cache.h — only a pointer is needed here, so it stays forward
+// declared rather than pulling <map>/<mutex>/<list> into every params.h user.
+class Lut3DCache;
+
 // Input color space selector for the rgb->raw chromaticity transform. Each maps
 // to a baked RGB->XYZ matrix (apply_cctf_decoding=False, CAT02 to the film's
 // reference illuminant) inside the filming stage.
@@ -198,6 +202,14 @@ struct PrintingParams {
     bool use_enlarger_lut = false;
     int lut_resolution = 32;
     double grain_density_min[3] = {0.07, 0.08, 0.12};
+
+    // OPTIONAL engine-level memo for the built LUT (kernels/lut3d_cache.h). PERF
+    // only: nullptr (the default — every direct caller and every parity test)
+    // builds the LUT inline exactly as before, and a non-null cache returns a LUT
+    // built by the same code from the same inputs, so the render is byte-identical
+    // either way. Only spk_engine passes one, so a preview does not rebuild the
+    // same 3D LUT on every frame.
+    Lut3DCache* lut_cache = nullptr;
 
     // OPT-IN print density-curve morph (s023). When morph.active (default false)
     // the develop step rebuilds the print density table from the paper's

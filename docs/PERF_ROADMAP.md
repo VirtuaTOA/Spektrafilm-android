@@ -93,4 +93,26 @@ behave like the arm target will:
 true hotspot on-device and (b) size the LUT resolution / fp16 / tile parameters. The bit-exact
 parity gate (`test_*`) is the guardrail for the *exact* path throughout.
 
+## The LUT build cost is now memoized (and measured)
+
+The caveat above — "the LUT build cost ≈ its savings at small sizes" — was the LUT being
+**rebuilt on every call**. `spk_simulate_preview` forces both spectral LUTs on, so every
+interactive frame paid it twice. Measured on host arm64 (M-series, 8 workers) at the preview's
+`lut_resolution = 17`, per LUT: **build ≈ 1.3–1.7 ms** (17³ = 4913 samples × an 81-band
+spectral integral) and **PCHIP prepare ≈ 0.23 ms** — so ≈ 3.5 ms per print-route frame, which
+is what showed up as a fixed per-call cost that a draft render could not amortise.
+
+`kernels/lut3d_cache.{h,cpp}` memoizes both, keyed by raw bytes of every input the sample
+function and the grid consume (compared exactly, never hashed) and bounded by an LRU byte
+budget, since several keyed inputs are live slider params. A 384 px draft on the same host:
+scan_film **13.6 → 12.1 ms**, print **26.0 → 22.9 ms** (both LUTs fetched), ~10–12%, with the
+fitted fixed intercept dropping **1.9 → 0.29 ms**. Gated by `test_lut_cache_e2e` (warm engine
+must equal a fresh engine byte-for-byte).
+
+What is **left** on this path, and is now the larger term: `apply_lut_3d_pchip` interpolates
+the image on **one thread** — ≈ 4.4 ms per LUT for 147k px, versus 0.4 ms for the parallelized
+direct per-pixel loop it replaces. It is a pure per-pixel map with disjoint outputs, so
+`kernels/parallel`'s deterministic chunking would apply unchanged (thread-invariant by
+construction). That is the next cheap win here, worth roughly 2× the memo.
+
 *Film modeling powered by spektrafilm (GPLv3).*

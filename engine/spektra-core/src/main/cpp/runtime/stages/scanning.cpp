@@ -13,11 +13,15 @@
 #include "runtime/stages/scanning.h"
 
 #include <cmath>
+#include <cstdint>
+#include <memory>
+#include <string>
 #include <vector>
 
 #include "kernels/exponential_filter.h"
 #include "kernels/exp10.h"
 #include "kernels/lut3d.h"
+#include "kernels/lut3d_cache.h"
 #include "kernels/parallel.h"
 #include "model/color_output.h"
 #include "model/conversions.h"
@@ -184,8 +188,43 @@ void scan(const Profile& film, const ScanningParams& params,
         ctx.cmf = kCieCmf1931;
         ctx.S = S;
         ctx.inv_norm = inv_norm;
-        Lut3D lut =
-            build_lut_3d(xmin, xmax, steps, {}, &cmy_to_log_xyz_fn, &ctx);
+
+        // PERF (kernels/lut3d_cache.h): with an engine cache attached, fetch the
+        // memoized build instead of redoing steps^3 spectral integrals every call.
+        // The key folds EVERY value cmy_to_log_xyz reads plus the grid that samples
+        // it, as raw IEEE-754 bytes:
+        //   - the film's channel_density + base_density spectra (ctx.channel_density
+        //     / ctx.base_density, whole vectors — a superset of the S entries read),
+        //   - the sample count S,
+        //   - the resolved domain bounds xmin/xmax, which already encode the route
+        //     (scan_film vs print) and its inputs: nanmin/nanmax of the profile's
+        //     density_curves and params.grain_density_min,
+        //   - the clamped step count.
+        // scan_film itself is folded too, so the two routes can never share a slot
+        // even if their bounds coincided. ctx.illum (kIlluminantD50), ctx.cmf
+        // (kCieCmf1931) and ctx.inv_norm (1/kNormD50) are compile-time constants —
+        // they cannot differ between calls, so they need no fold. Anything added to
+        // CmyToLogXyzCtx later MUST be added here as well.
+        std::shared_ptr<const PreparedLut3D> prepared;
+        if (params.lut_cache) {
+            std::string key;
+            lut_key_append_tag(&key, "scan3d");
+            const uint8_t route = params.scan_film ? 1u : 0u;
+            lut_key_append(&key, route);
+            lut_key_append(&key, S);
+            lut_key_append(&key, film.channel_density.data(),
+                           film.channel_density.size());
+            lut_key_append(&key, film.base_density.data(),
+                           film.base_density.size());
+            lut_key_append(&key, xmin, 3);
+            lut_key_append(&key, xmax, 3);
+            lut_key_append(&key, steps);
+            prepared = params.lut_cache->get_or_build(key, xmin, xmax, steps,
+                                                      &cmy_to_log_xyz_fn, &ctx);
+        } else {
+            prepared = prepare_lut_3d_pchip(
+                build_lut_3d(xmin, xmax, steps, {}, &cmy_to_log_xyz_fn, &ctx));
+        }
 
         // Interpolate the whole density image (compute_with_lut: normalize by
         // (data - xmin)/(xmax - xmin) then PCHIP-interpolate) -> per-pixel log_xyz.
@@ -193,7 +232,8 @@ void scan(const Profile& film, const ScanningParams& params,
         std::vector<double> dens_d(static_cast<size_t>(npix) * 3);
         for (size_t i = 0; i < dens_d.size(); ++i)
             dens_d[i] = static_cast<double>(density_cmy[i]);
-        apply_lut_3d_pchip(lut, dens_d.data(), width, height, lut_log_xyz.data());
+        apply_prepared_lut_3d_pchip(*prepared, dens_d.data(), width, height,
+                                    lut_log_xyz.data());
     }
 
     // The Python reference computes the whole chain in float64 (NumPy default for

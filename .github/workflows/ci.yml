@@ -246,6 +246,21 @@ jobs:
           # so every other golden stays byte-identical; this gates only the opt-in path.
           build_run test_gamut_in_xy tests/gamut_in_cases.bin
           build_run test_lut_accel "$G"
+          # Spectral 3D-LUT MEMO (kernels/lut3d_cache): the scanner + enlarger LUTs
+          # are pure functions of the profile spectra, the enlarger/scan constants,
+          # the domain bounds and the step count, but were rebuilt on EVERY call —
+          # and spk_simulate_preview forces both on, so every interactive frame paid
+          # two steps^3 sweeps of 81-band spectral integrals to reproduce a LUT that
+          # had not changed. The memo is only sound if a hit is indistinguishable
+          # from a rebuild, so this compares a warm engine against a FRESH one
+          # (which can only ever build cold) and demands BYTE-IDENTICAL output — not
+          # a tolerance band. It also perturbs every param folded into either key
+          # ONE AT A TIME (both profiles, the enlarger filter shifts + neutral CC,
+          # exposure compensation, the preflash, grain.density_min, lut_resolution):
+          # each must rebuild AND still match cold exactly, so an under-specified
+          # key that silently served a stale LUT fails here. Plus 1-vs-8 worker
+          # invariance through the warm cache.
+          build_run test_lut_cache_e2e "$ASSET" tests/scan_portra_input_rgb.f64
           build_run test_scanner_lut_e2e "$ASSET" "$G/scan_portra" tests/scan_portra_input_rgb.f64
           build_run test_enlarger_lut_e2e "$ASSET" "$G/print_portra" tests/scan_portra_input_rgb.f64
           # Output color spaces: scan_portra final_rgb for all six output spaces

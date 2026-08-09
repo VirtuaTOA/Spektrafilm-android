@@ -94,11 +94,15 @@ g++ -std=c++17 -O2 -pthread -I. -I../../../../../tools/parity \
 # then run with the args the CI `engine-parity` job uses (see .github/workflows/ci.yml)
 ```
 
-A test passes when its output contains no `FAIL` line. CI `engine-parity` gates (35 tests):
+A test passes when its output contains no `FAIL` line. `tools/parity/run_engine_parity.sh`
+runs the whole job locally with the same argv (it aborts if its table drifts from the
+workflow's). CI `engine-parity` gates (36 tests):
 `simulate_e2e` (goldens + BOTH film-density memos + the print-density memo + per-param key
 completeness), `filming`, `spatial`, `crop_resize`, `downscale` (minification AA prefilter),
 `autoexposure`, `small_preview_aa` (AE metering downscale AA), `diffusion` (+`_e2e`),
-`lut_accel`, `scanner_lut_e2e`, `enlarger_lut_e2e`, `output_spaces`, `lensblur`, `tonecurve`,
+`lut_accel`, `lut_cache_e2e` (the scanner/enlarger 3D-LUT memo: a warm engine must match a
+fresh one byte-for-byte, and every param folded into a LUT key must rebuild when perturbed),
+`scanner_lut_e2e`, `enlarger_lut_e2e`, `output_spaces`, `lensblur`, `tonecurve`,
 `half`, `bake_lut`, `params_passthrough`, `print_curves_morph` (opt-in s023 morph),
 `np_interp` (non-monotonic DIR axis), `gamut_out_aces` + `gamut_out_oklch` + `gamut_out_oklrab`
 (opt-in output gamut compression — ACES-RGC, Oklch perceptual, and Oklrab = Oklch indexed by

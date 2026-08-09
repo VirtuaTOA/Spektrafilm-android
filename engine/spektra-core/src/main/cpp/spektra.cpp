@@ -49,6 +49,7 @@
 #endif
 
 #include "io/npy_lut.h"
+#include "kernels/lut3d_cache.h"  // spk_engine holds the spectral 3D-LUT memo by value
 #include "model/color_filters.h"
 #include "profiles/profile.h"
 #include "runtime/color_reference.h"
@@ -211,6 +212,22 @@ struct spk_engine {
     std::mutex film_cache_mutex;
     FilmMemoSlot film_memo[2];
 
+    // SPECTRAL 3D-LUT memo (PERF), shared by the opt-in scanner LUT (scan()) and
+    // the opt-in enlarger LUT (print_expose()). Both are pure functions of the
+    // profile spectra, the enlarger/scan constants, the domain bounds and the step
+    // count, but were rebuilt from scratch on EVERY call — and
+    // spk_simulate_preview forces BOTH on, so every interactive frame paid two
+    // steps^3 sweeps of 81-band spectral integrals (plus their O(steps^3) PCHIP
+    // prepare) to reproduce a LUT that had not changed. Unlike the buffer memos
+    // above this one is keyed by RAW KEY BYTES compared exactly, not by a hash:
+    // each stage assembles a key from every value its sample function and grid
+    // construction consume (see the fold lists at the two call sites), so a hit
+    // returns a LUT byte-identical to rebuilding and no param change can silently
+    // reuse a stale one. Bounded LRU — several keyed inputs (the filtered
+    // illuminant, the midgray factor, grain.density_min) are live user params, so
+    // an unbounded map would grow with slider travel. Thread-safe on its own.
+    spk::Lut3DCache lut_cache;
+
     // PRINT-DENSITY (print_expose + print_develop) memo, keyed by the
     // film_density_cmy buffer CONTENT + every printing-stage input
     // (compute_print_density_key). Content-hashing makes it correct
@@ -258,6 +275,15 @@ uint64_t spk_test_print_density_cache_misses(spk_engine* eng) {
     if (!eng) return 0;
     std::lock_guard<std::mutex> g(eng->film_cache_mutex);
     return eng->print_density_memo.misses;
+}
+// Spectral 3D-LUT memo counters (scanner + enlarger share the cache; the kind tag
+// in each key keeps the two apart). tests/test_lut_cache_e2e.cpp reads these to
+// assert the memo engages AND that a hit renders byte-identically to a rebuild.
+uint64_t spk_test_lut_cache_hits(spk_engine* eng) {
+    return eng ? eng->lut_cache.hits() : 0;
+}
+uint64_t spk_test_lut_cache_misses(spk_engine* eng) {
+    return eng ? eng->lut_cache.misses() : 0;
 }
 #endif
 
@@ -1050,6 +1076,7 @@ spk_status run_scan_film(spk_engine* eng, const spk_image* in, const spk_params*
     if (p->use_scanner_lut != 0) {
         sparams.use_lut = true;
         sparams.lut_resolution = p->lut_resolution;
+        sparams.lut_cache = &eng->lut_cache;  // memo the build (PERF, byte-identical)
     }
     sparams.tone_curve = build_tone_curve_set(p);
     // Scanner BLACK/WHITE XYZ correction (scan_film route): apply the shared affine
@@ -1219,6 +1246,7 @@ spk_status run_print(spk_engine* eng, const spk_image* in, const spk_params* p,
     if (p->use_enlarger_lut != 0) {
         pparams.use_enlarger_lut = true;
         pparams.lut_resolution = p->lut_resolution;
+        pparams.lut_cache = &eng->lut_cache;  // memo the build (PERF, byte-identical)
         pparams.grain_density_min[0] = static_cast<double>(p->grain_density_min[0]);
         pparams.grain_density_min[1] = static_cast<double>(p->grain_density_min[1]);
         pparams.grain_density_min[2] = static_cast<double>(p->grain_density_min[2]);
@@ -1473,6 +1501,7 @@ spk_status run_print(spk_engine* eng, const spk_image* in, const spk_params* p,
     if (p->use_scanner_lut != 0) {
         sparams.use_lut = true;
         sparams.lut_resolution = p->lut_resolution;
+        sparams.lut_cache = &eng->lut_cache;  // memo the build (PERF, byte-identical)
     }
     sparams.tone_curve = build_tone_curve_set(p);
     // Scanner BLACK/WHITE XYZ correction (print route): apply the shared affine
