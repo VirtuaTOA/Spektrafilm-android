@@ -21,6 +21,7 @@ add_library(spektra SHARED
         kernels/spectral_upsampling.cpp     # Hanatos2025 RGB->spectrum (M3)
         kernels/stats.cpp                   # Poisson + Binomial samplers (grain, M6)
         kernels/lut3d.cpp                   # opt-in PCHIP 3D LUT accel (M7, default OFF)
+        kernels/lut3d_cache.cpp             # engine memo for built 3D LUTs (PERF, byte-identical)
         kernels/parallel.cpp                # deterministic fork-join per-pixel threading (M6)
         kernels/tonecurve.cpp               # optional 1D tone curve on final display RGB
         kernels/half.cpp                    # fp16 (NEON) <-> f32 conversion (preview proxy storage)
