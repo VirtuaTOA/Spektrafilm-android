@@ -17,6 +17,16 @@ project(sftiff LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+# DEBUG BUILDS MUST STILL BE OPTIMISED. CMake's default CMAKE_CXX_FLAGS_DEBUG is "-g"
+# with NO -O flag, i.e. -O0 — several times slower for numeric/codec work, which makes
+# on-device timings from a debug APK meaningless.
+if (NOT CMAKE_CXX_FLAGS_DEBUG MATCHES "-O")
+    set(CMAKE_CXX_FLAGS_DEBUG "-O2 -g")
+endif()
+if (NOT CMAKE_C_FLAGS_DEBUG MATCHES "-O")
+    set(CMAKE_C_FLAGS_DEBUG "-O2 -g")
+endif()
+
 if (NOT CMAKE_CXX_FLAGS_RELEASE)
     set(CMAKE_CXX_FLAGS_RELEASE "-O2")
 endif ()

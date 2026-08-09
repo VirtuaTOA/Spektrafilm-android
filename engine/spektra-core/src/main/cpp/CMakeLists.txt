@@ -10,6 +10,17 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 # integration; -fno-finite-math-only is REQUIRED — the scanning stage relies on NaN
 # propagation through density_to_light to match spektrafilm's profile null handling.
 set(CMAKE_CXX_FLAGS_RELEASE "-O3 -ffast-math -fno-finite-math-only")
+# DEBUG BUILDS MUST STILL BE OPTIMISED. CMake's default CMAKE_CXX_FLAGS_DEBUG is
+# "-g" with NO -O flag, i.e. -O0. For a numeric engine that is 3-10x slower, which
+# makes every on-device timing from a debug APK meaningless — a full-resolution
+# export measured minutes on device while the same work took seconds on a host
+# build, purely because of this. -O2 matches the flags the host parity suite is
+# validated with (release uses -O3 -ffast-math, the documented divergence), so a
+# debug APK now behaves numerically like the parity build and performs sensibly.
+if (NOT CMAKE_CXX_FLAGS_DEBUG MATCHES "-O")
+    set(CMAKE_CXX_FLAGS_DEBUG "-O2 -g")
+endif()
+
 
 add_library(spektra SHARED
         spektra.cpp

@@ -30,6 +30,16 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 # Release: the demosaic/colour loops are the hot path. -O3 is safe; we keep IEEE
 # semantics here because the Von-Kries / white-balance multipliers must match the
 # desktop rawpy output to within golden-vector tolerance.
+# DEBUG BUILDS MUST STILL BE OPTIMISED. CMake's default CMAKE_CXX_FLAGS_DEBUG is "-g"
+# with NO -O flag, i.e. -O0 — several times slower for numeric/codec work, which makes
+# on-device timings from a debug APK meaningless.
+if (NOT CMAKE_CXX_FLAGS_DEBUG MATCHES "-O")
+    set(CMAKE_CXX_FLAGS_DEBUG "-O2 -g")
+endif()
+if (NOT CMAKE_C_FLAGS_DEBUG MATCHES "-O")
+    set(CMAKE_C_FLAGS_DEBUG "-O2 -g")
+endif()
+
 if (NOT CMAKE_CXX_FLAGS_RELEASE)
     set(CMAKE_CXX_FLAGS_RELEASE "-O3")
 endif ()
