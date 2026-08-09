@@ -67,7 +67,10 @@ import javax.microedition.khronos.opengles.GL10
  */
 @Composable
 fun CameraGlPreview(
-    rotationDegrees: Int,
+    uvRotationDegrees: Int,
+    displayAspect: Float,
+    bufferWidth: Int,
+    bufferHeight: Int,
     modifier: Modifier = Modifier,
     lut: CubeLut? = null,
     exposureGain: Float = 1f,
@@ -82,6 +85,8 @@ fun CameraGlPreview(
             onUnavailable = { unavailable.value() },
         )
     }
+    renderer.setBufferSize(bufferWidth, bufferHeight)
+    renderer.setDisplayAspect(displayAspect)
     DisposableEffect(Unit) { onDispose { renderer.release() } }
     AndroidView(
         modifier = modifier,
@@ -95,7 +100,7 @@ fun CameraGlPreview(
                 renderer.attachView(this)
             }
         },
-        update = { renderer.submit(rotationDegrees, lut, exposureGain) },
+        update = { renderer.submit(uvRotationDegrees, lut, exposureGain) },
     )
 }
 
@@ -117,13 +122,48 @@ private class CameraLutRenderer(
     private var viewW = 0
     private var viewH = 0
 
-    @Volatile private var rotation = 90
+    // REQUIRED for a standalone SurfaceTexture used as a camera output: without
+    // setDefaultBufferSize the producer has no agreed buffer geometry and the
+    // consumer can end up with nothing to sample. Set before the Surface is handed
+    // to the camera.
+    @Volatile private var bufW = 1920
+    @Volatile private var bufH = 1080
+
+    // TWO SEPARATE ROTATIONS — conflating them was the "stretched, black bars" bug.
+    //
+    //   uvRotation   rotates the SAMPLED CONTENT in the shader.
+    //   displayAspect is the shape of the scene ON SCREEN.
+    //
+    // They are not the same thing, because this device's SurfaceTexture transform
+    // matrix ALREADY carries the sensor->display rotation (measured tm column0 =
+    // [0,-1,0,0]). So the content arrives upright with uvRotation = 0, while the
+    // scene's displayed aspect is still the sensor buffer's aspect INVERTED (a
+    // landscape 16:9 sensor showing a portrait scene). Driving the letterbox from
+    // uvRotation assumed a landscape scene and stretched the portrait content to fit.
+    @Volatile private var rotation = 0
+    @Volatile private var displayAspect = 9f / 16f
     @Volatile private var gain = 1f
     @Volatile private var pendingLut: CubeLut? = null
     @Volatile private var haveLut = false
     private var reportedFail = false
+    @Volatile private var frameCount = 0L
+    private var drawCount = 0L
+    private val logged = HashSet<String>()
+
+    /** Log a diagnostic once per distinct message — onDrawFrame runs at frame rate. */
+    private fun logOnce(msg: String) {
+        if (logged.add(msg)) Diag.w("camera gl: $msg")
+    }
 
     fun attachView(v: GLSurfaceView) { view = v }
+
+    fun setBufferSize(w: Int, h: Int) {
+        if (w > 0 && h > 0) { bufW = w; bufH = h }
+    }
+
+    fun setDisplayAspect(a: Float) {
+        if (a.isFinite() && a > 0f) displayAspect = a
+    }
 
     fun submit(rotationDegrees: Int, lut: CubeLut?, exposureGain: Float) {
         rotation = ((rotationDegrees % 360) + 360) % 360
@@ -153,6 +193,24 @@ private class CameraLutRenderer(
         camTex = tex[0]
         lutTex = tex[1]
 
+        // A 1x1x1 placeholder so texture unit 1 ALWAYS holds a valid sampler3D-compatible
+        // texture. GL validates EVERY active sampler at draw time, regardless of dynamic
+        // branching in the shader: leaving uLut defaulted to unit 0 (where the EXTERNAL_OES
+        // camera texture lives) is a sampler-type/target mismatch, which makes glDrawArrays
+        // fail with GL_INVALID_OPERATION and DISCARDS THE DRAW — a black screen with a
+        // perfectly working camera and shader. Measured: 2144 x 0x502 before this fix.
+        val zero = ByteBuffer.allocateDirect(3 * 4).order(ByteOrder.nativeOrder()).asFloatBuffer()
+        zero.put(floatArrayOf(0f, 0f, 0f)); zero.position(0)
+        GLES30.glBindTexture(GLES30.GL_TEXTURE_3D, lutTex)
+        GLES30.glTexParameteri(GLES30.GL_TEXTURE_3D, GLES30.GL_TEXTURE_MIN_FILTER, GLES30.GL_LINEAR)
+        GLES30.glTexParameteri(GLES30.GL_TEXTURE_3D, GLES30.GL_TEXTURE_MAG_FILTER, GLES30.GL_LINEAR)
+        GLES30.glTexParameteri(GLES30.GL_TEXTURE_3D, GLES30.GL_TEXTURE_WRAP_S, GLES30.GL_CLAMP_TO_EDGE)
+        GLES30.glTexParameteri(GLES30.GL_TEXTURE_3D, GLES30.GL_TEXTURE_WRAP_T, GLES30.GL_CLAMP_TO_EDGE)
+        GLES30.glTexParameteri(GLES30.GL_TEXTURE_3D, GLES30.GL_TEXTURE_WRAP_R, GLES30.GL_CLAMP_TO_EDGE)
+        GLES30.glPixelStorei(GLES30.GL_UNPACK_ALIGNMENT, 1)
+        GLES30.glTexImage3D(GLES30.GL_TEXTURE_3D, 0, GLES30.GL_RGB16F, 1, 1, 1, 0,
+                            GLES30.GL_RGB, GLES30.GL_FLOAT, zero)
+
         GLES30.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, camTex)
         GLES30.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES30.GL_TEXTURE_MIN_FILTER, GLES30.GL_LINEAR)
         GLES30.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES30.GL_TEXTURE_MAG_FILTER, GLES30.GL_LINEAR)
@@ -164,7 +222,12 @@ private class CameraLutRenderer(
         release()
         haveLut = false
         val st = SurfaceTexture(camTex)
-        st.setOnFrameAvailableListener { view?.requestRender() }
+        st.setDefaultBufferSize(bufW, bufH)
+        st.setOnFrameAvailableListener {
+            frameCount++
+            view?.requestRender()
+        }
+        Diag.i("camera gl: surface ready tex=$camTex buffer=${bufW}x$bufH")
         surfaceTexture = st
         val s = Surface(st)
         surface = s
@@ -180,13 +243,21 @@ private class CameraLutRenderer(
         GLES30.glClearColor(0f, 0f, 0f, 1f)
         GLES30.glClear(GLES30.GL_COLOR_BUFFER_BIT)
         val st = surfaceTexture ?: return
-        if (program == 0) return
+        if (program == 0) { logOnce("draw: program == 0, nothing to draw"); return }
 
         // Pull the newest camera frame into the external texture and take its transform.
         runCatching {
             st.updateTexImage()
             st.getTransformMatrix(texMatrix)
-        }.onFailure { return }
+        }.onFailure {
+            logOnce("draw: updateTexImage failed: ${it.message}")
+            return
+        }
+        drawCount++
+        if (drawCount == 1L || drawCount == 30L) {
+            Diag.i("camera gl: draw #$drawCount frames=$frameCount rot=$rotation " +
+                "view=${viewW}x$viewH tm=[${texMatrix.take(4).joinToString()}]")
+        }
 
         pendingLut?.let { uploadLut(it); pendingLut = null }
 
@@ -194,11 +265,11 @@ private class CameraLutRenderer(
         GLES30.glActiveTexture(GLES30.GL_TEXTURE0)
         GLES30.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, camTex)
         GLES30.glUniform1i(GLES30.glGetUniformLocation(program, "uCam"), 0)
-        if (haveLut) {
-            GLES30.glActiveTexture(GLES30.GL_TEXTURE1)
-            GLES30.glBindTexture(GLES30.GL_TEXTURE_3D, lutTex)
-            GLES30.glUniform1i(GLES30.glGetUniformLocation(program, "uLut"), 1)
-        }
+        // Unconditional: see the placeholder note in onSurfaceCreated. uLut must resolve
+        // to a bound 3D texture on every draw or the whole draw is rejected.
+        GLES30.glActiveTexture(GLES30.GL_TEXTURE1)
+        GLES30.glBindTexture(GLES30.GL_TEXTURE_3D, lutTex)
+        GLES30.glUniform1i(GLES30.glGetUniformLocation(program, "uLut"), 1)
         GLES30.glUniform1i(GLES30.glGetUniformLocation(program, "uUseLut"), if (haveLut) 1 else 0)
         GLES30.glUniform1f(GLES30.glGetUniformLocation(program, "uExposureGain"), gain)
         GLES30.glUniformMatrix4fv(
@@ -210,8 +281,9 @@ private class CameraLutRenderer(
         )
         // Letterbox: the camera stream is 16:9 in SENSOR orientation, so at 90/270 the
         // displayed aspect is its reciprocal. Bars stay black rather than stretching.
-        val rotated = rotation == 90 || rotation == 270
-        val imgA = if (rotated) 9f / 16f else 16f / 9f
+        // Letterbox to the SCENE's on-screen shape, supplied by the caller from the
+        // sensor-vs-display geometry — never inferred from uvRotation (see the field note).
+        val imgA = displayAspect
         var sx = 1f
         var sy = 1f
         if (viewW > 0 && viewH > 0) {
@@ -220,6 +292,11 @@ private class CameraLutRenderer(
         }
         GLES30.glUniform2f(GLES30.glGetUniformLocation(program, "uScale"), sx, sy)
         GLES30.glDrawArrays(GLES30.GL_TRIANGLE_STRIP, 0, 4)
+        // A draw rejected by GL renders NOTHING and is otherwise silent, so check once.
+        val err = GLES30.glGetError()
+        if (err != GLES30.GL_NO_ERROR) {
+            logOnce("draw rejected, glGetError=0x${Integer.toHexString(err)} (draw is discarded)")
+        }
     }
 
     /** Same (B,G,R)-axis mapping as LutGpuPreview — bakeCubeLut emits blue-fastest. */
@@ -252,7 +329,11 @@ private class CameraLutRenderer(
         GLES30.glLinkProgram(p)
         val ok = IntArray(1)
         GLES30.glGetProgramiv(p, GLES30.GL_LINK_STATUS, ok, 0)
-        if (ok[0] == 0) { GLES30.glDeleteProgram(p); return 0 }
+        if (ok[0] == 0) {
+            Diag.e("camera gl: program link FAILED: ${GLES30.glGetProgramInfoLog(p)}", null)
+            GLES30.glDeleteProgram(p)
+            return 0
+        }
         GLES30.glDeleteShader(vs); GLES30.glDeleteShader(fs)
         return p
     }
@@ -263,7 +344,12 @@ private class CameraLutRenderer(
         GLES30.glCompileShader(s)
         val ok = IntArray(1)
         GLES30.glGetShaderiv(s, GLES30.GL_COMPILE_STATUS, ok, 0)
-        if (ok[0] == 0) { GLES30.glDeleteShader(s); return 0 }
+        if (ok[0] == 0) {
+            val kind = if (type == GLES30.GL_VERTEX_SHADER) "vertex" else "fragment"
+            Diag.e("camera gl: $kind shader FAILED: ${GLES30.glGetShaderInfoLog(s)}", null)
+            GLES30.glDeleteShader(s)
+            return 0
+        }
         return s
     }
 

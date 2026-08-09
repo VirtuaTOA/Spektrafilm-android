@@ -231,9 +231,17 @@ class CameraSession(
         b.set(CaptureRequest.NOISE_REDUCTION_MODE, CameraMetadata.NOISE_REDUCTION_MODE_OFF)
         b.set(CaptureRequest.TONEMAP_MODE, CameraMetadata.TONEMAP_MODE_CONTRAST_CURVE)
         b.set(CaptureRequest.TONEMAP_CURVE, TonemapCurve(linear, linear, linear))
-        b.set(CaptureRequest.CONTROL_AWB_MODE, CameraMetadata.CONTROL_AWB_MODE_OFF)
-        b.set(CaptureRequest.COLOR_CORRECTION_MODE,
-              CameraMetadata.COLOR_CORRECTION_MODE_TRANSFORM_MATRIX)
+        // AWB STAYS ON. Phase 0 proved AWB can be switched off, and the first device
+        // test proved WHY it should not be: with AWB off and no colour transform
+        // supplied, the stream is the sensor's raw spectral response — heavily green
+        // (a Bayer array has twice as many green photosites) and unbalanced. The film
+        // engine wants scene-linear light, not un-white-balanced sensor counts, and the
+        // RAW capture will be white-balanced too (LibRaw, AS_SHOT), so leaving the ISP
+        // to white-balance the preview brings the two CLOSER together, not further apart.
+        // What matters for fidelity is the TONE CURVE, sharpening and NR being off —
+        // those destroy the radiometric relationship the engine depends on. White
+        // balance is a per-channel gain, which does not.
+        b.set(CaptureRequest.CONTROL_AWB_MODE, CameraMetadata.CONTROL_AWB_MODE_AUTO)
     }
 
     /**

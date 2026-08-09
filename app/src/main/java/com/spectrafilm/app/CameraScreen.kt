@@ -99,6 +99,9 @@ private fun CameraScreenSupported() {
         mutableStateOf(lenses.firstOrNull { it.label == "1x" } ?: lenses.first())
     }
     var status by remember { mutableStateOf("starting camera…") }
+    // Kept separate from `status`: the lens LaunchedEffect overwrites status, which
+    // would silently swallow a GL failure reported at roughly the same moment.
+    var glBroken by remember { mutableStateOf(false) }
 
     val session = remember { CameraSession(ctx) { msg -> status = "camera error: $msg" } }
     DisposableEffect(Unit) { onDispose { session.close() } }
@@ -112,6 +115,23 @@ private fun CameraScreenSupported() {
     }
     val previewSize = remember(lens) { CameraInventory.previewSize(ctx, lens.logicalId) }
 
+    // The scene's shape on screen. `rotation` is the sensor-vs-display difference, so at
+    // 90/270 a landscape sensor buffer is showing a PORTRAIT scene and the letterbox must
+    // use the inverted aspect. This is geometry and is always true — unlike the UV
+    // rotation below, which depends on what the driver already did.
+    val displayAspect = remember(rotation, previewSize) {
+        val srcA = previewSize.width.toFloat() / previewSize.height.toFloat()
+        if (rotation == 90 || rotation == 270) 1f / srcA else srcA
+    }
+
+    // UV rotation is SEPARATE from displayAspect (see CameraGlPreview). Device-verified
+    // 0 on SM-S931B: this driver's SurfaceTexture transform matrix already applies the
+    // sensor->display rotation, so the content arrives upright with no rotation of our
+    // own. That is a driver behaviour rather than a guarantee — a device that does NOT
+    // pre-rotate would need `rotation` here instead of 0, which is why this stays a
+    // parameter rather than being hardcoded into the shader.
+    val uvRotation = 0
+
     // The Surface only exists once GL has built it; reopening on a new Surface is
     // required after a context loss, so this is keyed on the surface identity.
     var surface by remember { mutableStateOf<Surface?>(null) }
@@ -119,17 +139,21 @@ private fun CameraScreenSupported() {
         val s = surface ?: return@LaunchedEffect
         session.open(lens, s, previewSize)
         status = "${lens.label} · ${lens.focalMm}mm · preview ${previewSize.width}x${previewSize.height} · " +
-            (lens.rawSize?.let { "RAW ${it.width}x${it.height}" } ?: "no RAW")
+            (lens.rawSize?.let { "RAW ${it.width}x${it.height}" } ?: "no RAW") +
+            " · scene ${"%.2f".format(displayAspect)}:1"
     }
 
     Box(Modifier.fillMaxSize().background(Color.Black)) {
         CameraGlPreview(
-            rotationDegrees = rotation,
+            uvRotationDegrees = uvRotation,
+            displayAspect = displayAspect,
+            bufferWidth = previewSize.width,
+            bufferHeight = previewSize.height,
             modifier = Modifier.fillMaxSize(),
             lut = null,             // step 1d/1e: the baked stock LUT goes here
             exposureGain = 1f,      // step 1e: from the meter/lock button
             onSurfaceReady = { s -> surface = s },
-            onUnavailable = { status = "GPU viewfinder unavailable on this device" },
+            onUnavailable = { glBroken = true },
         )
         Column(
             Modifier.align(Alignment.BottomCenter).fillMaxWidth()
@@ -137,6 +161,14 @@ private fun CameraScreenSupported() {
                 .navigationBarsPadding().padding(12.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
+            if (glBroken) {
+                Text(
+                    "GPU viewfinder unavailable — shader or GL context failed. " +
+                        "See Settings > Diagnostics > logcat for the shader log.",
+                    color = Color(0xFFFF8A80),
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
             Text(
                 status,
                 color = Color.White,
@@ -150,8 +182,9 @@ private fun CameraScreenSupported() {
                 }
             }
             Text(
-                "Checkpoint build: plain camera passthrough, no film look yet. " +
-                    "Check the image is upright, the right way round, and not stretched.",
+                "Passthrough — no film look yet. The flat, low-contrast rendering is " +
+                    "correct: the ISP tone curve is switched off so the stream stays " +
+                    "near-linear, which is what the film engine needs.",
                 color = Color.White.copy(alpha = 0.75f),
                 style = MaterialTheme.typography.bodySmall,
             )

@@ -147,7 +147,9 @@ class MainActivity : ComponentActivity() {
         var showOnboarding by remember { mutableStateOf(!settings.seenOnboarding) }
         // One-time editor coach marks, shown once onboarding is out of the way.
         var showEditorCoach by remember { mutableStateOf(!settings.seenEditorCoach) }
-        var screen by remember { mutableStateOf(Screen.EDITOR) }
+        // rememberSaveable: a configuration change (rotating the device) recreates the
+        // Activity, and a plain remember would drop the user back to the editor mid-task.
+        var screen by rememberSaveable { mutableStateOf(Screen.EDITOR) }
         // Hoisted here (not inside EditorScreen) so the open adjustment category survives a
         // round-trip to Settings/About and back — you return to where you were editing,
         // Lightroom-style, instead of a collapsed panel.
