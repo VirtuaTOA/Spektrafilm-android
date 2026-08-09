@@ -242,6 +242,40 @@ applied separately, outside the LUT — see §5. This is a pre-existing bug in t
 
 **Goal:** point the phone at a scene, swipe through stocks, see the look change live. No capture.
 
+### Steps 1–2 — DONE and device-verified (2026-08-09)
+
+The exposure problem is solved. `spk_bake_cube_lut` now bakes with `auto_exposure = 0` (ec2ca59),
+and `spk_meter_exposure_ev` exposes the gain the render would apply so callers can supply it
+(cae7fa2). It does not re-derive the metering — it runs `spk::apply_auto_exposure`, the identical
+function `preprocess_geometry` calls, and returns the EV that function already reports, so the
+preview's gain **cannot** drift from the render's. Surfaced as
+`SpektraEngine.meterExposureEv` / `.exposureGain`; the GPU preview meters the proxy it bakes from
+and applies the gain in-shader as `uExposureGain` before the `[0,1]` LUT-domain clamp.
+
+**Verified on SM-S931B:** with GPU preview on, an Expert RAW DNG now matches the CPU render in
+colour and exposure. Previously it was visibly darker with lifted, flat blacks. 36/36 parity green,
+NDK build + unit tests + lint green.
+
+Useful property that fell out of this: AE always meters a max-256 internal downscale, so a small
+proxy meters near-identically to the full-resolution original of the same scene. That is what will
+let a viewfinder-metered gain carry over to a full-res capture in Phase 2.
+
+Note the fit preview is soft on BOTH paths — that is `previewMaxSize` (default 640 px), the
+two-resolution proxy rule, not a LUT artifact. It does not affect the camera, whose viewfinder is
+fed a ~1080p camera stream rather than a decoded proxy. On the GPU path a larger proxy costs only
+decode + upload rather than a per-frame CPU render, so raising `previewMaxSize` is far cheaper
+there — a possible later refinement, not Phase 1 work.
+
+### Steps 3–8 — camera plumbing
+
+**Camera2 directly, NOT CameraX.** Decision #3 (a `compileSdk` bump) is therefore moot. Phase 0
+already proved a working Camera2 path on this device, and all three things this feature needs are
+Camera2-native while being awkward or unsupported through CameraX:
+`OutputConfiguration.setPhysicalCameraId` for the telephoto, the four ISP-disable
+`CaptureRequest` keys, and `RAW_SENSOR` + `DngCreator`. CameraX's value is in simplifying the
+common case; none of these are it, and its `Preview` use case is not needed either since the
+viewfinder renders through our own GL surface.
+
 Work:
 
 - CameraX dependencies added to `gradle/libs.versions.toml` (the project uses a version catalog;
