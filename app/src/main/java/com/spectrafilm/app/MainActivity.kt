@@ -372,6 +372,9 @@ class MainActivity : ComponentActivity() {
         val gpuEnabled = settings.gpuPreview
         var gpuProxy by remember { mutableStateOf<LinearImage?>(null) }
         var gpuLut by remember { mutableStateOf<CubeLut?>(null) }
+        // Exposure gain (2^ev) the baked LUT does NOT carry — see SpektraEngine.bakeCubeLut.
+        // Metered by the engine itself so it equals what simulate() applies.
+        var gpuGain by remember { mutableFloatStateOf(1f) }
 
         // interactive crop overlay (Lightroom-style); hosts on top of everything.
         var cropOverlayOpen by remember { mutableStateOf(false) }
@@ -1095,19 +1098,26 @@ class MainActivity : ComponentActivity() {
         // path. The proxy decode is a cache hit (the main effect already loaded it), so this
         // adds only the LUT bake. Cancelled/replaced cleanly when previewTick advances.
         LaunchedEffect(previewTick, gpuEnabled) {
-            if (!gpuEnabled) { gpuLut = null; gpuProxy = null; return@LaunchedEffect }
+            if (!gpuEnabled) { gpuLut = null; gpuProxy = null; gpuGain = 1f; return@LaunchedEffect }
             val e = engine ?: return@LaunchedEffect
             delay(380)
             runCatching {
                 withContext(Dispatchers.Default) {
                     val img = loadSourceCachedForPreview(state.previewMaxSize.coerceAtLeast(256))
-                    val lut = CubeLut.parse(e.bakeCubeLut(state.toParams(), 33))
-                    img to lut
+                    val params = state.toParams()
+                    val lut = CubeLut.parse(e.bakeCubeLut(params, 33))
+                    // The bake emits the pointwise transform at UNITY gain (a 3D LUT
+                    // cannot carry auto-exposure), so meter the SAME proxy through the
+                    // engine's own metering and hand the gain to the shader. Without it
+                    // the GPU preview renders dark with lifted shadows — the scene lands
+                    // in the film curve's toe. Metering is cheap next to the bake.
+                    val gain = e.exposureGain(img, params)
+                    Triple(img, lut, gain)
                 }
-            }.onSuccess { (img, lut) ->
+            }.onSuccess { (img, lut, gain) ->
                 if (lut != null) {
-                    gpuProxy = img; gpuLut = lut
-                    Diag.i("gpu lut baked ${lut.size}^3 — fit preview runs on GPU")
+                    gpuProxy = img; gpuLut = lut; gpuGain = gain
+                    Diag.i("gpu lut baked ${lut.size}^3 gain=%.3f — fit preview runs on GPU".format(gain))
                 } else {
                     Diag.w("gpu lut parse failed -> CPU preview")
                 }
@@ -1286,6 +1296,7 @@ class MainActivity : ComponentActivity() {
                         gpuEnabled = gpuEnabled,
                         gpuProxy = gpuProxy,
                         gpuLut = gpuLut,
+                        gpuGain = gpuGain,
                         onToggleCompare = { compareMode = !compareMode },
                         onToggleHistogram = { showHistogram = !showHistogram },
                         onRotate = { rotation = rotation.next() },
@@ -1909,6 +1920,7 @@ class MainActivity : ComponentActivity() {
         gpuEnabled: Boolean,
         gpuProxy: LinearImage?,
         gpuLut: CubeLut?,
+        gpuGain: Float,
         onToggleCompare: () -> Unit,
         onToggleHistogram: () -> Unit,
         onRotate: () -> Unit,
@@ -1943,6 +1955,7 @@ class MainActivity : ComponentActivity() {
                 gpuActive -> GpuPreviewSurface(
                     proxy = gpuProxy!!,
                     lut = gpuLut!!,
+                    exposureGain = gpuGain,
                     modifier = Modifier.fillMaxSize(),
                     onPointPicked = onPointPicked,
                     onZoomStart = { gpuZoomHandoff = true; gpuZoomInitial = 1f },

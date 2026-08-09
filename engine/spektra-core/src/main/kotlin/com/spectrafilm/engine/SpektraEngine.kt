@@ -169,6 +169,31 @@ class SpektraEngine private constructor(
             ?: error("spektra: bakeCubeLut returned null (handle=$handle)")
     }
 
+    /**
+     * Meter [image] and return the auto-exposure compensation in **EV** that
+     * [simulate] would apply to it under [params] — without rendering. The linear
+     * gain is `2^ev`; [exposureGain] wraps that. Returns 0.0 (unity gain) when
+     * `camera.autoExposure` is off.
+     *
+     * This is the companion to [bakeCubeLut]. A baked 3D LUT carries no exposure
+     * (see that method), so a caller applying one to real pixels must scale them
+     * itself — and it must be the SAME gain the engine would use, or the preview
+     * misreports brightness. Internally this runs the identical metering function
+     * the render calls, so the two cannot drift apart.
+     *
+     * Metering always runs on a max-256 downscale internally, so a proxy meters
+     * near-identically to the full-resolution original of the same scene. Cheap
+     * relative to a render, but still off the main thread.
+     */
+    fun meterExposureEv(image: LinearImage, params: SpektraParams): Double {
+        check(!destroyed) { "spektra: meterExposureEv called on a closed engine" }
+        return nativeMeterExposureEv(handle, image.data, image.width, image.height, params)
+    }
+
+    /** Linear exposure gain (`2^ev`) for [image] under [params]. See [meterExposureEv]. */
+    fun exposureGain(image: LinearImage, params: SpektraParams): Float =
+        Math.pow(2.0, meterExposureEv(image, params)).toFloat()
+
     /** Destroy the native engine. Idempotent — a second call is a no-op (no double free). */
     @Synchronized
     override fun close() {
@@ -184,6 +209,9 @@ class SpektraEngine private constructor(
         handle: Long, inBuf: ByteBuffer, w: Int, h: Int, inCs: String,
         params: SpektraParams, preview: Boolean,
     ): SimResult?
+    private external fun nativeMeterExposureEv(
+        handle: Long, inBuf: ByteBuffer, w: Int, h: Int, params: SpektraParams,
+    ): Double
     private external fun nativeBakeCubeLut(
         handle: Long, params: SpektraParams, size: Int,
     ): String?

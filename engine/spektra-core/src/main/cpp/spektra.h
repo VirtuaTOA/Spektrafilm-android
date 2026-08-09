@@ -381,6 +381,33 @@ const char* spk_status_str(spk_status);
 spk_status spk_bake_cube_lut(spk_engine*, const spk_params*, int lut_size,
                              char* out_text, size_t out_cap, size_t* needed);
 
+/*
+ * Meter `in` and return the auto-exposure compensation in EV that a render of the
+ * SAME image with the SAME params would apply, WITHOUT rendering anything. The
+ * corresponding linear gain is 2**ev. Returns 0.0 EV (unity gain) when
+ * params->auto_exposure is off, or when the metering method string is
+ * unrecognised — both matching the render path exactly.
+ *
+ * WHY THIS EXISTS. spk_bake_cube_lut emits a pointwise LUT at unity gain, because
+ * a 3D LUT cannot carry auto-exposure (AE is a function of the whole image; the
+ * bake's input is a synthetic lattice). Anything applying that LUT to real pixels
+ * must therefore supply the gain itself, and it has to be the SAME gain the
+ * engine would use or the LUT preview misreports brightness. This entry point is
+ * how a caller gets that number instead of reimplementing the metering and
+ * drifting from it: internally it runs spk::apply_auto_exposure — the identical
+ * function preprocess_geometry calls — on a scratch copy and returns its EV.
+ *
+ * The metering itself always runs on a max-256 nearest downscale (small_preview),
+ * so feeding a proxy rather than the full-resolution image changes the result
+ * only marginally — which is what makes a viewfinder-metered gain usable for a
+ * full-resolution capture of the same scene.
+ *
+ * PURE READ: no engine state is mutated and `in` is not modified. Additive — no
+ * existing code path changed, so the parity goldens are untouched by construction.
+ */
+spk_status spk_meter_exposure_ev(spk_engine*, const spk_image* in,
+                                 const spk_params*, double* out_ev);
+
 #ifdef __cplusplus
 } /* extern "C" */
 #endif

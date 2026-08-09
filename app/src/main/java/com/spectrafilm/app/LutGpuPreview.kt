@@ -94,6 +94,7 @@ fun GpuLutPreview(
     proxy: LinearImage,
     lut: CubeLut,
     modifier: Modifier = Modifier,
+    exposureGain: Float = 1f,
     onUnavailable: () -> Unit = {},
 ) {
     val cb = rememberUpdatedState(onUnavailable)
@@ -108,7 +109,7 @@ fun GpuLutPreview(
             }
         },
         update = { view ->
-            renderer.submit(proxy, lut)
+            renderer.submit(proxy, lut, exposureGain)
             view.requestRender()
         },
     )
@@ -122,6 +123,14 @@ fun GpuLutPreview(
 private class LutRenderer(private val onUnavailable: () -> Unit) : GLSurfaceView.Renderer {
     @Volatile private var pendingProxy: LinearImage? = null
     @Volatile private var pendingLut: CubeLut? = null
+
+    // Exposure gain (2^ev) applied to the proxy BEFORE the LUT lookup. The baked
+    // LUT carries no auto-exposure — it cannot, since AE meters a whole image and
+    // the bake's input is a synthetic lattice — so the gain has to be supplied
+    // here or the render sits in the film curve's toe (dark, lifted shadows).
+    // Comes from SpektraEngine.exposureGain, i.e. the engine's own metering, so it
+    // matches what simulate() would apply. Not a texture, so no upload needed.
+    @Volatile private var gain: Float = 1f
 
     // Last successfully submitted inputs, kept so a recreated GL context (surface
     // destroyed/recreated, e.g. backgrounding) can re-upload instead of staying black.
@@ -141,9 +150,10 @@ private class LutRenderer(private val onUnavailable: () -> Unit) : GLSurfaceView
     private var haveProxy = false
     private var haveLut = false
 
-    fun submit(proxy: LinearImage, lut: CubeLut) {
+    fun submit(proxy: LinearImage, lut: CubeLut, exposureGain: Float) {
         pendingProxy = proxy
         pendingLut = lut
+        gain = if (exposureGain.isFinite() && exposureGain > 0f) exposureGain else 1f
         lastProxy = proxy
         lastLut = lut
     }
@@ -199,6 +209,7 @@ private class LutRenderer(private val onUnavailable: () -> Unit) : GLSurfaceView
             if (viewA > imgA) sx = imgA / viewA else sy = viewA / imgA
         }
         GLES30.glUniform2f(GLES30.glGetUniformLocation(program, "uScale"), sx, sy)
+        GLES30.glUniform1f(GLES30.glGetUniformLocation(program, "uExposureGain"), gain)
         // Full-screen quad (triangle strip) from gl_VertexID — no VBO needed.
         GLES30.glDrawArrays(GLES30.GL_TRIANGLE_STRIP, 0, 4)
     }
@@ -285,9 +296,14 @@ private class LutRenderer(private val onUnavailable: () -> Unit) : GLSurfaceView
             in vec2 vUv;
             uniform sampler2D uProxy;
             uniform sampler3D uLut;
+            uniform float uExposureGain;
             out vec4 fragColor;
             void main() {
-                vec3 lin = texture(uProxy, vUv).rgb;
+                // Auto-exposure gain FIRST: the LUT is baked at unity gain (a 3D LUT
+                // cannot carry AE), so this reproduces the global scale simulate()
+                // applies in preprocess_geometry before the film stage. Then clamp to
+                // the LUT's [0,1] linear-ProPhoto domain.
+                vec3 lin = texture(uProxy, vUv).rgb * uExposureGain;
                 vec3 c = clamp(lin, 0.0, 1.0);
                 // LUT axes are (B,G,R) fastest->slowest (see uploadLut), so index (b,g,r).
                 vec3 outc = texture(uLut, vec3(c.b, c.g, c.r)).rgb;

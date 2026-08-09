@@ -1930,6 +1930,42 @@ spk_status spk_simulate_tap(spk_engine* eng, const spk_image* in,
     return SPK_ERR_BAD_ARGS;  // unknown tap
 }
 
+spk_status spk_meter_exposure_ev(spk_engine* eng, const spk_image* in,
+                                 const spk_params* p, double* out_ev) {
+    if (!eng || !in || !p || !out_ev || !in->data) return SPK_ERR_BAD_ARGS;
+    if (in->width <= 0 || in->height <= 0) return SPK_ERR_BAD_ARGS;
+
+    // AE off => the render applies no gain, so the caller's gain is unity (0 EV).
+    *out_ev = 0.0;
+    if (p->auto_exposure == 0) return SPK_OK;
+
+    const int w = in->width, h = in->height;
+    std::vector<double> src(static_cast<size_t>(w) * h * 3);
+    for (size_t i = 0; i < src.size(); ++i)
+        src[i] = static_cast<double>(in->data[i]);
+
+    // Method resolution is character-for-character the same as preprocess_geometry's
+    // (NULL => the schema default center_weighted; an unrecognised string is passed
+    // through as known=false so the metering collapses to 0 EV, matching the render).
+    spk::AeMethod method = spk::AeMethod::kCenterWeighted;
+    const bool known = p->auto_exposure_method == nullptr
+                           ? true
+                           : spk::ae_method_from_string(p->auto_exposure_method,
+                                                        &method);
+
+    // Reuse apply_auto_exposure VERBATIM on a scratch copy (whose scaled pixels we
+    // then discard) rather than re-deriving the metering here. It already returns
+    // the EV it applied, so this value cannot drift from what the render actually
+    // uses — which is the entire point of exposing it. The wasted scaling pass is
+    // O(npix) on a copy the caller never sees, negligible against the metering's
+    // own small_preview + luminance integral.
+    *out_ev = spk::apply_auto_exposure(src.data(), w, h,
+                                       spk::AeColorSpace::kProPhotoRGB,
+                                       /*apply_cctf_decoding=*/p->input_cctf_decoding != 0,
+                                       method, known);
+    return SPK_OK;
+}
+
 spk_status spk_bake_cube_lut(spk_engine* eng, const spk_params* p, int lut_size,
                              char* out_text, size_t out_cap, size_t* needed) {
     if (needed) *needed = 0;

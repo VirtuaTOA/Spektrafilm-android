@@ -93,6 +93,7 @@ fun GpuPreviewSurface(
     proxy: LinearImage,
     lut: CubeLut,
     modifier: Modifier = Modifier,
+    exposureGain: Float = 1f,
     onPointPicked: ((Float, Float) -> Unit)? = null,
     onZoomStart: () -> Unit = {},
     onZoomIn: () -> Unit = onZoomStart,
@@ -123,7 +124,9 @@ fun GpuPreviewSurface(
     ) {
         GpuLutPreview(
             proxy = proxy, lut = lut,
-            modifier = Modifier.fillMaxSize(), onUnavailable = onUnavailable,
+            modifier = Modifier.fillMaxSize(),
+            exposureGain = exposureGain,
+            onUnavailable = onUnavailable,
         )
         // Explicit zoom-in affordance on the fit-only GPU surface: hands off to the CPU
         // ZoomableImage already zoomed (the CPU path owns pinch/pan + the sharp ROI render).

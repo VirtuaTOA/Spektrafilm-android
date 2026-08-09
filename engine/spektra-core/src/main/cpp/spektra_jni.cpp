@@ -757,6 +757,53 @@ Java_com_spectrafilm_engine_SimResult_allocDirectBuffer(JNIEnv* env, jclass /*cl
 }
 
 /*
+ * nativeMeterExposureEv(handle, inBuf, w, h, paramsObj) -> double EV.
+ * Meters the image the way a render would and returns the auto-exposure
+ * compensation in EV (linear gain = 2**ev), without rendering. Used by the LUT
+ * preview paths, which must supply the exposure gain themselves because a baked
+ * 3D LUT carries none (see spk_meter_exposure_ev / spk_bake_cube_lut).
+ */
+JNI(jdouble, nativeMeterExposureEv)(JNIEnv* env, jobject /*thiz*/, jlong handle,
+                                    jobject inBuf, jint w, jint h,
+                                    jobject paramsObj) {
+    spk_engine* eng = reinterpret_cast<spk_engine*>(handle);
+    if (!eng) { throw_runtime(env, "spektra: engine handle is null"); return 0.0; }
+    if (!inBuf) { throw_runtime(env, "spektra: input ByteBuffer is null"); return 0.0; }
+    if (w <= 0 || h <= 0) {
+        throw_runtime(env, "spektra: invalid image dimensions");
+        return 0.0;
+    }
+    float* in_data = static_cast<float*>(env->GetDirectBufferAddress(inBuf));
+    if (!in_data) {
+        throw_runtime(env, "spektra: input ByteBuffer is not direct");
+        return 0.0;
+    }
+    // Same 64-bit capacity guard as nativeSimulate: reject anything too small for
+    // w*h*3 float32 rather than reading out of bounds.
+    const jlong cap = env->GetDirectBufferCapacity(inBuf);
+    const int64_t need_bytes =
+        static_cast<int64_t>(w) * h * 3 * static_cast<int64_t>(sizeof(float));
+    if (cap < 0 || static_cast<int64_t>(cap) < need_bytes) {
+        throw_runtime(env, "spektra: input ByteBuffer capacity too small for "
+                           "width*height*3*4 bytes");
+        return 0.0;
+    }
+
+    spk_params params;
+    ParamStorage store;
+    if (!marshal_params(env, paramsObj, &params, &store)) {
+        throw_runtime(env, "spektra: failed to marshal params");
+        return 0.0;
+    }
+
+    spk_image img{in_data, w, h, static_cast<int32_t>(SPK_CS_PROPHOTO)};
+    double ev = 0.0;
+    spk_status st = spk_meter_exposure_ev(eng, &img, &params, &ev);
+    if (st != SPK_OK) { throw_status(env, st); return 0.0; }
+    return static_cast<jdouble>(ev);
+}
+
+/*
  * nativeBakeCubeLut(handle, paramsObj, size) -> String (.cube text) or null.
  * Marshals the params (reusing marshal_params), bakes a size^3 3D LUT of the
  * current film look, and returns the .cube text. The bake forces all spatial /
