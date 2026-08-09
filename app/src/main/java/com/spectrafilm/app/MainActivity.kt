@@ -150,6 +150,13 @@ class MainActivity : ComponentActivity() {
         // rememberSaveable: a configuration change (rotating the device) recreates the
         // Activity, and a plain remember would drop the user back to the editor mid-task.
         var screen by rememberSaveable { mutableStateOf(Screen.EDITOR) }
+
+        // Resume any capture queue left behind by a previous run. The process can be killed
+        // under memory pressure mid-render — this pipeline allocates over a gigabyte at full
+        // resolution — so the disk queue is what stops a shot the user already took from
+        // being silently lost.
+        val appCtx = LocalContext.current.applicationContext
+        LaunchedEffect(Unit) { ProcessingService.resumeIfPending(appCtx) }
         // Hoisted here (not inside EditorScreen) so the open adjustment category survives a
         // round-trip to Settings/About and back — you return to where you were editing,
         // Lightroom-style, instead of a collapsed panel.

@@ -178,6 +178,8 @@ private fun CameraScreenSupported() {
     var lut by remember { mutableStateOf<CubeLut?>(null) }
     var gain by remember { mutableFloatStateOf(1f) }
     var aeLocked by remember { mutableStateOf(false) }
+    var capturing by remember { mutableStateOf(false) }
+    var queued by remember { mutableStateOf(0) }
     var manualFocus by remember { mutableStateOf(false) }
     // Focus as a CONTINUOUS value in dioptres (1/m), not a step index. Dioptres are the
     // space focus physically moves in, so dragging is perceptually even across the range;
@@ -279,6 +281,13 @@ private fun CameraScreenSupported() {
         }.getOrNull()?.let { gain = Math.pow(2.0, it).toFloat() }
     }
 
+    LaunchedEffect(Unit) {
+        while (true) {
+            queued = CaptureQueue.pending(ctx)
+            kotlinx.coroutines.delay(1500)
+        }
+    }
+
     Box(Modifier.fillMaxSize().background(Color.Black)) {
         CameraGlPreview(
             uvRotationDegrees = uvRotation,
@@ -331,6 +340,14 @@ private fun CameraScreenSupported() {
             error?.let {
                 Text(it, color = Color(0xFFFF8A80), style = MaterialTheme.typography.bodySmall)
             }
+            if (queued > 0) {
+                Text(
+                    if (queued == 1) "1 photo rendering…" else "$queued photos rendering…",
+                    color = UNSELECTED,
+                    fontSize = 11.sp,
+                    letterSpacing = 1.sp,
+                )
+            }
 
             if (manualFocus) {
                 FocusWheel(
@@ -361,7 +378,35 @@ private fun CameraScreenSupported() {
 
             ProcessToggle(slideMode = slideMode, onToggle = { slideMode = !slideMode })
 
-            ShutterButton(onClick = { error = "Capture arrives in the next step" })
+            ShutterButton(
+                enabled = session.canCapture && !capturing,
+                onClick = {
+                    if (!session.canCapture) {
+                        error = "This lens cannot capture RAW"
+                        return@ShutterButton
+                    }
+                    capturing = true
+                    val target = java.io.File(
+                        CaptureQueue.captureDir(ctx),
+                        "SPK_${System.currentTimeMillis()}.dng",
+                    )
+                    session.capture(target) { file, err ->
+                        capturing = false
+                        if (file == null) {
+                            error = err ?: "capture failed"
+                        } else {
+                            error = null
+                            // The DNG is on disk; rendering happens in the background so the
+                            // viewfinder is usable again immediately.
+                            ProcessingService.enqueue(
+                                ctx,
+                                CaptureJob(file.absolutePath, stock.id, System.currentTimeMillis()),
+                            )
+                            queued = CaptureQueue.pending(ctx)
+                        }
+                    }
+                },
+            )
         }
     }
 }
@@ -545,11 +590,15 @@ private fun LensChip(label: String, selected: Boolean, onClick: () -> Unit) {
 
 /** Classic shutter: filled disc inside a ring. */
 @Composable
-private fun ShutterButton(onClick: () -> Unit) {
-    Canvas(Modifier.size(70.dp).clip(RoundedCornerShape(35.dp)).clickable(onClick = onClick)) {
+private fun ShutterButton(enabled: Boolean, onClick: () -> Unit) {
+    val tint = if (enabled) Color.White else UNSELECTED
+    Canvas(
+        Modifier.size(70.dp).clip(RoundedCornerShape(35.dp))
+            .clickable(enabled = enabled, onClick = onClick)
+    ) {
         val r = size.minDimension / 2f
-        drawCircle(Color.White, radius = r - 2.dp.toPx(), style = Stroke(width = 3.dp.toPx()))
-        drawCircle(Color.White, radius = r - 9.dp.toPx())
+        drawCircle(tint, radius = r - 2.dp.toPx(), style = Stroke(width = 3.dp.toPx()))
+        drawCircle(tint, radius = r - 9.dp.toPx())
     }
 }
 

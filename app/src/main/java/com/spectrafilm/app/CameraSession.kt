@@ -42,7 +42,12 @@ import android.hardware.camera2.CaptureRequest
 import android.hardware.camera2.params.OutputConfiguration
 import android.hardware.camera2.params.SessionConfiguration
 import android.hardware.camera2.params.TonemapCurve
+import android.hardware.camera2.DngCreator
+import android.hardware.camera2.TotalCaptureResult
+import android.media.Image
 import android.media.ImageReader
+import java.io.File
+import java.io.FileOutputStream
 import android.os.Build
 import android.os.Handler
 import android.os.HandlerThread
@@ -196,6 +201,20 @@ class CameraSession(
     private var request: CaptureRequest.Builder? = null
     private var meterReader: ImageReader? = null
 
+    // RAW_SENSOR output for the shutter. Separate from the preview and metering streams
+    // because a still capture wants the sensor's full resolution, and DngCreator needs the
+    // untouched Bayer frame plus the exact CaptureResult that produced it.
+    private var rawReader: ImageReader? = null
+    private var captureChars: CameraCharacteristics? = null
+    // A capture is an Image and a TotalCaptureResult that arrive on different callbacks;
+    // DngCreator needs BOTH. One shot is in flight at a time, so a single pending slot each
+    // is sufficient — and simpler than a timestamp-keyed map that could leak on a dropped
+    // frame. Whichever arrives second does the write.
+    @Volatile private var pendingImage: Image? = null
+    @Volatile private var pendingResult: TotalCaptureResult? = null
+    @Volatile private var captureTarget: File? = null
+    @Volatile private var captureDone: ((File?, String?) -> Unit)? = null
+
     // Latest luma plane, kept up to date by the ImageReader callback. The viewfinder
     // itself renders from the GL external texture; this SECOND, tiny output exists only
     // so the exposure can be metered on the CPU — SpektraEngine.meterExposureEv needs a
@@ -265,6 +284,30 @@ class CameraSession(
         val meterCfg = OutputConfiguration(reader.surface).apply {
             if (lens.physicalId != null) setPhysicalCameraId(lens.physicalId)
         }
+
+        // RAW still output. LEVEL_3 devices guarantee PRIV(preview) + YUV(small) + RAW(max)
+        // as a simultaneous combination, which is exactly this session; LIMITED lenses may
+        // refuse it, so the reader is only added when the lens advertises a RAW size and the
+        // session falls back to preview-only if configuration fails.
+        val rawCfgs = mutableListOf<OutputConfiguration>()
+        val rawSize = lens.rawSize
+        if (rawSize != null) {
+            val rr = ImageReader.newInstance(
+                rawSize.width, rawSize.height, ImageFormat.RAW_SENSOR, 2,
+            )
+            rr.setOnImageAvailableListener({ r ->
+                pendingImage = runCatching { r.acquireNextImage() }.getOrNull()
+                tryWriteDng()
+            }, h)
+            rawReader = rr
+            captureChars = runCatching {
+                (ctx.getSystemService(Context.CAMERA_SERVICE) as CameraManager)
+                    .getCameraCharacteristics(lens.physicalId ?: lens.logicalId)
+            }.getOrNull()
+            rawCfgs += OutputConfiguration(rr.surface).apply {
+                if (lens.physicalId != null) setPhysicalCameraId(lens.physicalId)
+            }
+        }
         val executor = Executor { r -> h.post(r) }
         val wideGamut = displayP3Supported(lens)
         previewIsDisplayP3 = wideGamut
@@ -289,7 +332,8 @@ class CameraSession(
         runCatching {
             camera.createCaptureSession(
                 SessionConfiguration(
-                    SessionConfiguration.SESSION_REGULAR, listOf(outCfg, meterCfg), executor, cb,
+                    SessionConfiguration.SESSION_REGULAR,
+                    listOf(outCfg, meterCfg) + rawCfgs, executor, cb,
                 ).apply {
                     // WIDER PRIMARIES, SAME EXPOSURE. Unlike the HLG10 attempt, a colour-space
                     // profile carries no HDR reference levels — it changes only the primaries,
@@ -465,12 +509,101 @@ class CameraSession(
         }
     }
 
+    /** True when this session can take a RAW still (the lens advertised a RAW size). */
+    val canCapture: Boolean get() = rawReader != null && captureChars != null
+
+    /**
+     * Take one RAW still into [target] as a DNG. [onDone] is called with the file on
+     * success, or a message on failure — always exactly once.
+     *
+     * Deliberately RAW: the whole point is that the film simulation gets scene-linear
+     * sensor data. The ISP disables applied to the preview are irrelevant here because a
+     * RAW frame is captured BEFORE the ISP touches it — the tone curve, sharpening and
+     * noise reduction we fight in the viewfinder simply do not exist in this path.
+     */
+    fun capture(target: File, onDone: (File?, String?) -> Unit) {
+        val d = device
+        val s = session
+        val h = handler
+        val rr = rawReader
+        if (d == null || s == null || h == null || rr == null) {
+            onDone(null, "camera not ready"); return
+        }
+        if (captureDone != null) { onDone(null, "a capture is already in flight"); return }
+        captureTarget = target
+        captureDone = onDone
+        pendingImage = null
+        pendingResult = null
+        val req = d.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE).apply {
+            addTarget(rr.surface)
+            applyFocus(this)
+            set(CaptureRequest.CONTROL_AE_LOCK, aeLocked)
+        }.build()
+        runCatching {
+            s.capture(req, object : CameraCaptureSession.CaptureCallback() {
+                override fun onCaptureCompleted(
+                    sess: CameraCaptureSession, request: CaptureRequest,
+                    result: TotalCaptureResult,
+                ) {
+                    pendingResult = result
+                    tryWriteDng()
+                }
+                override fun onCaptureFailed(
+                    sess: CameraCaptureSession, request: CaptureRequest,
+                    failure: android.hardware.camera2.CaptureFailure,
+                ) {
+                    finishCapture(null, "capture failed (reason ${failure.reason})")
+                }
+            }, h)
+        }.onFailure { finishCapture(null, "capture request failed: ${it.message}") }
+    }
+
+    /** Write the DNG once BOTH the frame and its metadata have arrived. */
+    private fun tryWriteDng() {
+        val img = pendingImage ?: return
+        val res = pendingResult ?: return
+        val chars = captureChars
+        val target = captureTarget
+        pendingImage = null
+        pendingResult = null
+        if (chars == null || target == null) {
+            runCatching { img.close() }
+            finishCapture(null, "capture state missing")
+            return
+        }
+        val err = runCatching {
+            DngCreator(chars, res).use { dng ->
+                FileOutputStream(target).use { out -> dng.writeImage(out, img) }
+            }
+        }.exceptionOrNull()
+        runCatching { img.close() }
+        if (err != null) {
+            runCatching { target.delete() }
+            finishCapture(null, "DNG write failed: ${err.message}")
+        } else {
+            finishCapture(target, null)
+        }
+    }
+
+    private fun finishCapture(file: File?, error: String?) {
+        val cb = captureDone
+        captureDone = null
+        captureTarget = null
+        cb?.invoke(file, error)
+    }
+
     fun close() {
         runCatching { session?.stopRepeating() }
         runCatching { session?.close() }
         runCatching { device?.close() }
         runCatching { meterReader?.close() }
         meterReader = null
+        runCatching { pendingImage?.close() }
+        pendingImage = null
+        pendingResult = null
+        runCatching { rawReader?.close() }
+        rawReader = null
+        captureChars = null
         latestLuma = null
         session = null; device = null; request = null
         thread?.quitSafely()
