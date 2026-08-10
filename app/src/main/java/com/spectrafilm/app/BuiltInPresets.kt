@@ -143,6 +143,17 @@ object BuiltInPresets {
             e.optJSONObject("diffusionFilter")?.let { applyDiffusion(it, s.printDiffusionState) }
         }
 
+        // Creative white balance. Like `grade`, these are app-side (a Bradford CAT baked
+        // into the decode, not a SpektraParams field), so without this block a built-in
+        // preset silently could not set them. Same schema Presets.encode/decode uses.
+        p.optJSONObject("creativeWb")?.let { c ->
+            if (c.has("temp")) s.creativeWbTemp = c.f("temp", s.creativeWbTemp)
+            if (c.has("tint")) s.creativeWbTint = c.f("tint", s.creativeWbTint)
+            if (c.has("balanceToFilmStock")) {
+                s.balanceToFilmStock = c.optBoolean("balanceToFilmStock", s.balanceToFilmStock)
+            }
+        }
+
         p.optJSONObject("scanner")?.let { sc ->
             if (sc.has("lensBlur")) s.scanLensBlur = sc.f("lensBlur", s.scanLensBlur)
             if (sc.has("whiteCorrection")) s.scanWhiteCorrection = sc.optBoolean("whiteCorrection", s.scanWhiteCorrection)
