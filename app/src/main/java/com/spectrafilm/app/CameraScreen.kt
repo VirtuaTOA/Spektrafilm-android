@@ -42,6 +42,7 @@ import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.systemBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.LazyRow
@@ -263,13 +264,15 @@ private fun CameraScreenSupported() {
     // keeps — the central 3:2 region: the app's output is film-shaped, not phone-shaped.
     val displayRotation = remember(configuration) { displayRotationDegrees(ctx) }
     val srcAspect = previewSize.width.toFloat() / previewSize.height.toFloat()
-    val crop = remember(srcAspect) {
-        // Sample only what survives the crop, about the buffer's centre.
-        if (srcAspect < FILM_ASPECT) 1f to (srcAspect / FILM_ASPECT)   // 4:3 -> trim height
-        else (FILM_ASPECT / srcAspect) to 1f                            // wider -> trim width
-    }
-    val displayAspect = remember(rotation, srcAspect) {
-        if (rotation == 90 || rotation == 270) 1f / FILM_ASPECT else FILM_ASPECT
+    // Everything below is in SCREEN space, because that is where the shader crops.
+    val turned = rotation == 90 || rotation == 270
+    val sceneAspect = if (turned) 1f / srcAspect else srcAspect     // scene as displayed
+    val displayAspect = if (turned) 1f / FILM_ASPECT else FILM_ASPECT
+    val crop = remember(sceneAspect, displayAspect) {
+        // Trim whichever axis has surplus, so the sampled region's aspect equals the
+        // letterbox's. Get this the wrong way round and the image is simply stretched.
+        if (sceneAspect > displayAspect) (displayAspect / sceneAspect) to 1f
+        else 1f to (sceneAspect / displayAspect)
     }
     // The driver's SurfaceTexture transform already carries the sensor->display rotation
     // FOR THE ORIENTATION THE STREAM WAS CONFIGURED IN — device-verified as 0 in portrait.
@@ -278,10 +281,28 @@ private fun CameraScreenSupported() {
     // the verified case) and corrects every other orientation.
     val uvRotation = ((360 - displayRotation) % 360 + 360) % 360
 
+    // The camera must be RELEASED when the app leaves the foreground. Android reclaims it
+    // for whatever comes next, so holding it across a background trip meant the session was
+    // already dead on return and reopening failed ("camera error 3") until a force-stop.
+    // Closing on ON_STOP and reopening on ON_START makes returning to the app just work.
+    val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
     var surface by remember { mutableStateOf<Surface?>(null) }
     // The session decides whether P3 was actually granted; the shader must only use the P3
     // matrix if it really was, so this is read back rather than assumed.
     var wideGamut by remember { mutableStateOf(false) }
+    DisposableEffect(lifecycleOwner, surface, lens) {
+        val obs = androidx.lifecycle.LifecycleEventObserver { _, event ->
+            when (event) {
+                androidx.lifecycle.Lifecycle.Event.ON_STOP -> session.close()
+                androidx.lifecycle.Lifecycle.Event.ON_START ->
+                    surface?.let { session.open(lens, it, previewSize) }
+                else -> Unit
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(obs)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(obs) }
+    }
+
     LaunchedEffect(surface, lens) {
         val s = surface ?: return@LaunchedEffect
         session.open(lens, s, previewSize)
@@ -484,13 +505,13 @@ private fun CameraScreenSupported() {
             // Side-by-side: the viewfinder takes the width it can and the controls become a
             // right-hand panel. Stacking them vertically (the portrait arrangement) left the
             // viewfinder a squashed strip with a wall of black beneath it.
-            Row(Modifier.fillMaxSize()) {
+            // systemBarsPadding on the ROW: in landscape the status bar sits over the
+            // viewfinder's top edge, so its icons showed through the image.
+            Row(Modifier.fillMaxSize().systemBarsPadding()) {
                 Box(Modifier.weight(1f).fillMaxHeight()) { viewfinder() }
                 Column(
                     Modifier.width(300.dp).fillMaxHeight()
                         .background(Color.Black)
-                        .statusBarsPadding()
-                        .navigationBarsPadding()
                         .padding(horizontal = 8.dp, vertical = 12.dp),
                     horizontalAlignment = Alignment.CenterHorizontally,
                     verticalArrangement = Arrangement.spacedBy(10.dp, Alignment.CenterVertically),

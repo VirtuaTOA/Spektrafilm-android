@@ -389,14 +389,16 @@ private class CameraLutRenderer(
                 float x = float(gl_VertexID & 1);
                 float y = float((gl_VertexID >> 1) & 1);
                 vec2 q = vec2(x, y);
+                // Crop FIRST, in the quad's own axes — which are the SCREEN's axes. It has
+                // to happen before any rotation: this driver already rotates via uTexMatrix,
+                // so cropping downstream of that trimmed the wrong axis and squashed the
+                // image sideways. The caller therefore computes the crop from the aspect the
+                // scene has ON SCREEN, not from the buffer's.
+                vec2 qc = (q - 0.5) * uCrop + 0.5;
                 float s = sin(uRotation), c = cos(uRotation);
-                vec2 d = q - 0.5;
+                vec2 d = qc - 0.5;
                 vec2 r = vec2(c * d.x - s * d.y, s * d.x + c * d.y) + 0.5;
-                // Crop AFTER the rotation, so it acts in the buffer's own axes no matter
-                // how the quad was turned, and BEFORE uTexMatrix, which maps into the
-                // texture's actual region.
-                vec2 cropped = (r - 0.5) * uCrop + 0.5;
-                vUv = (uTexMatrix * vec4(cropped, 0.0, 1.0)).xy;
+                vUv = (uTexMatrix * vec4(r, 0.0, 1.0)).xy;
                 gl_Position = vec4((q * 2.0 - 1.0) * uScale, 0.0, 1.0);
             }
         """
