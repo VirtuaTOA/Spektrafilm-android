@@ -378,7 +378,24 @@ const char* spk_status_str(spk_status);
  * `out_text` is null or `out_cap` is too small, returns SPK_ERR_BAD_ARGS so the
  * caller can resize and retry (the bake still runs to size it).
  */
+/*
+ * INPUT SHAPER (`shaper`): 0 = none, 1 = sRGB transfer.
+ *
+ * With no shaper the lattice is spaced EVENLY IN LINEAR LIGHT, which spends almost all
+ * of its resolution on highlights: at size 17 with the engine's 0.184 midgray, only
+ * about three lattice points fall below mid-grey, so the film curve's toe — where most
+ * of a photograph lives — is approximated by straight lines between three samples.
+ *
+ * With shaper 1 the lattice is spaced evenly in sRGB-ENCODED space instead (the entries
+ * are shaper^-1(i/(n-1))), putting roughly eight points below mid-grey at the same size.
+ * A caller MUST then apply the same transfer to its pixels before looking up.
+ *
+ * Shaper 0 is the default for a reason: a `.cube` file carries no shaper metadata, so a
+ * LUT exported for other software has to stay in the linear domain it advertises. Shaper
+ * 1 is for this app's own GPU preview, where both ends are under our control.
+ */
 spk_status spk_bake_cube_lut(spk_engine*, const spk_params*, int lut_size,
+                             int32_t shaper,
                              char* out_text, size_t out_cap, size_t* needed);
 
 /*

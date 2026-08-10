@@ -163,9 +163,13 @@ class SpektraEngine private constructor(
      * with lifted shadows (the scene sits in the film curve's toe). This differs from
      * [simulate], where the engine's own auto-exposure runs on the real image.
      */
-    fun bakeCubeLut(params: SpektraParams, size: Int = 33): String {
+    fun bakeCubeLut(
+        params: SpektraParams,
+        size: Int = 33,
+        shaper: Int = SHAPER_NONE,
+    ): String {
         check(!destroyed) { "spektra: bakeCubeLut called on a closed engine" }
-        return nativeBakeCubeLut(handle, params, size)
+        return nativeBakeCubeLut(handle, params, size, shaper)
             ?: error("spektra: bakeCubeLut returned null (handle=$handle)")
     }
 
@@ -213,7 +217,7 @@ class SpektraEngine private constructor(
         handle: Long, inBuf: ByteBuffer, w: Int, h: Int, params: SpektraParams,
     ): Double
     private external fun nativeBakeCubeLut(
-        handle: Long, params: SpektraParams, size: Int,
+        handle: Long, params: SpektraParams, size: Int, shaper: Int,
     ): String?
 
     companion object {
@@ -222,6 +226,21 @@ class SpektraEngine private constructor(
         // Engine constructors. Both are JNI instance-less (the C++ side ignores the
         // receiver); kept @JvmStatic so the secondary constructors can call them
         // before `this` exists.
+        /**
+         * Lattice spacing for [bakeCubeLut].
+         *
+         * [SHAPER_NONE] spaces entries evenly in LINEAR light — what a `.cube` file
+         * advertises, so the only correct choice for a LUT handed to other software. It is
+         * also badly lopsided: at size 17, with the engine's 0.184 midgray, barely three
+         * entries fall below mid-grey, leaving the film curve's toe as a few straight lines.
+         *
+         * [SHAPER_SRGB] spaces entries evenly in sRGB-encoded space instead — roughly eight
+         * below mid-grey at the same size. The caller MUST apply the same transfer to its
+         * pixels before the lookup, which is why it is only for our own GPU preview.
+         */
+        const val SHAPER_NONE = 0
+        const val SHAPER_SRGB = 1
+
         @JvmStatic private external fun nativeCreate(assetDir: String?): Long
         @JvmStatic private external fun nativeCreateFromAssets(assetManager: AssetManager): Long
 

@@ -1966,7 +1966,16 @@ spk_status spk_meter_exposure_ev(spk_engine* eng, const spk_image* in,
     return SPK_OK;
 }
 
+// sRGB EOTF: shaped lattice coordinate -> the linear value that coordinate stands for.
+// The GPU side applies the inverse (linear -> encoded) before its lookup, so the two
+// must stay exact inverses of each other.
+static inline float shaper_to_linear(float e) {
+    if (e <= 0.04045f) return e / 12.92f;
+    return static_cast<float>(std::pow((e + 0.055f) / 1.055f, 2.4));
+}
+
 spk_status spk_bake_cube_lut(spk_engine* eng, const spk_params* p, int lut_size,
+                             int32_t shaper,
                              char* out_text, size_t out_cap, size_t* needed) {
     if (needed) *needed = 0;
     if (!eng || !p) return SPK_ERR_BAD_ARGS;
@@ -2032,13 +2041,20 @@ spk_status spk_bake_cube_lut(spk_engine* eng, const spk_params* p, int lut_size,
     const size_t count = static_cast<size_t>(n) * n * n;
     std::vector<float> lattice(count * 3);
     const float denom = static_cast<float>(n - 1);
+    // With a shaper the lattice is spaced evenly in the SHAPED domain, so the entries
+    // are the linear values those shaped coordinates represent. That is what moves the
+    // sampling resolution down into the shadows where the film curve actually bends.
+    const bool shaped = shaper != 0;
     size_t idx = 0;
     for (int r = 0; r < n; ++r) {
-        const float rv = static_cast<float>(r) / denom;
+        float rv = static_cast<float>(r) / denom;
+        if (shaped) rv = shaper_to_linear(rv);
         for (int g = 0; g < n; ++g) {
-            const float gv = static_cast<float>(g) / denom;
+            float gv = static_cast<float>(g) / denom;
+            if (shaped) gv = shaper_to_linear(gv);
             for (int b = 0; b < n; ++b) {
-                const float bv = static_cast<float>(b) / denom;
+                float bv = static_cast<float>(b) / denom;
+                if (shaped) bv = shaper_to_linear(bv);
                 lattice[idx * 3 + 0] = rv;
                 lattice[idx * 3 + 1] = gv;
                 lattice[idx * 3 + 2] = bv;

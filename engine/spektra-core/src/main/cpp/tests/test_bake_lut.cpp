@@ -76,7 +76,7 @@ int main(int argc, char** argv) {
 
     // --- Pass 1: size the buffer (null out_text). ---------------------------
     size_t needed = 0;
-    st = spk_bake_cube_lut(eng, &p, N, nullptr, 0, &needed);
+    st = spk_bake_cube_lut(eng, &p, N, 0, nullptr, 0, &needed);
     if (needed == 0) {
         std::fprintf(stderr, "sizing pass set needed=0 (st=%s)\n", spk_status_str(st));
         ok = false;
@@ -84,7 +84,7 @@ int main(int argc, char** argv) {
 
     // --- Pass 2: actually bake. ---------------------------------------------
     std::vector<char> buf(needed > 0 ? needed : 1);
-    st = spk_bake_cube_lut(eng, &p, N, buf.data(), buf.size(), &needed);
+    st = spk_bake_cube_lut(eng, &p, N, 0, buf.data(), buf.size(), &needed);
     if (st != SPK_OK) {
         std::fprintf(stderr, "bake failed: %s\n", spk_status_str(st));
         spk_engine_destroy(eng);
@@ -97,9 +97,9 @@ int main(int argc, char** argv) {
     // --- Determinism: a second bake must be byte-identical (no stochastics). -
     {
         size_t need2 = 0;
-        spk_bake_cube_lut(eng, &p, N, nullptr, 0, &need2);
+        spk_bake_cube_lut(eng, &p, N, 0, nullptr, 0, &need2);
         std::vector<char> buf2(need2);
-        spk_bake_cube_lut(eng, &p, N, buf2.data(), buf2.size(), &need2);
+        spk_bake_cube_lut(eng, &p, N, 0, buf2.data(), buf2.size(), &need2);
         if (std::string(buf2.data()) != text) {
             std::fprintf(stderr, "bake is non-deterministic across runs\n");
             ok = false;

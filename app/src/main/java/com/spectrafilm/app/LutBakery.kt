@@ -87,8 +87,12 @@ object LutBakery {
         )
         cached(key)?.let { return it }
 
-        val raw = runCatching { engine.bakeCubeLut(state.toParams(), size) }.getOrNull()
-            ?: return null
+        // SHAPED lattice: the viewfinder is the one consumer where both ends are ours, so
+        // it can spend the LUT's resolution where the film curve actually bends rather than
+        // on highlights. The shader applies the matching transfer before its lookup.
+        val raw = runCatching {
+            engine.bakeCubeLut(state.toParams(), size, SpektraEngine.SHAPER_SRGB)
+        }.getOrNull() ?: return null
         val parsed = CubeLut.parse(raw) ?: return null
         val graded = applyGrade(parsed, key) ?: parsed
         store(key, graded)

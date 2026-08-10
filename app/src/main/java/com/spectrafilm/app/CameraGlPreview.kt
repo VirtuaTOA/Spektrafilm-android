@@ -385,6 +385,7 @@ private class CameraLutRenderer(
             uniform float uRotation;
             uniform vec2 uCrop;
             out vec2 vUv;
+
             void main() {
                 float x = float(gl_VertexID & 1);
                 float y = float((gl_VertexID >> 1) & 1);
@@ -445,6 +446,14 @@ private class CameraLutRenderer(
                     dot(c, vec3(0.0167029, 0.1176946, 0.8656026)));
             }
 
+            // EXACT inverse of shaper_to_linear in spektra.cpp. The LUT's entries are spaced
+            // evenly in this encoded space, so the lookup must be indexed through it or
+            // every value lands on the wrong lattice cell.
+            vec3 shaperEncode(vec3 c) {
+                return mix(c * 12.92,
+                           1.055 * pow(max(c, 0.0), vec3(1.0 / 2.4)) - 0.055,
+                           step(vec3(0.0031308), c));
+            }
             void main() {
                 vec3 cam = texture(uCam, vUv).rgb;
                 if (uUseLut == 0) { fragColor = vec4(cam, 1.0); return; }
@@ -463,7 +472,7 @@ private class CameraLutRenderer(
                 // primaries are far wider — the engine then reconstructs a more spectrally
                 // pure light than existed and renders it accordingly.
                 vec3 scene = toProPhoto(cam + d);
-                vec3 lin = clamp(scene * uExposureGain, 0.0, 1.0);
+                vec3 lin = shaperEncode(clamp(scene * uExposureGain, 0.0, 1.0));
                 fragColor = vec4(texture(uLut, vec3(lin.b, lin.g, lin.r)).rgb, 1.0);
             }
         """

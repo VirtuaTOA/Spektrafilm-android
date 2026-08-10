@@ -811,7 +811,7 @@ JNI(jdouble, nativeMeterExposureEv)(JNIEnv* env, jobject /*thiz*/, jlong handle,
  * learn the required buffer length, then to fill it.
  */
 JNI(jstring, nativeBakeCubeLut)(JNIEnv* env, jobject /*thiz*/, jlong handle,
-                                jobject paramsObj, jint size) {
+                                jobject paramsObj, jint size, jint shaper) {
     spk_engine* eng = reinterpret_cast<spk_engine*>(handle);
     if (!eng) { throw_runtime(env, "spektra: engine handle is null"); return nullptr; }
 
@@ -823,18 +823,18 @@ JNI(jstring, nativeBakeCubeLut)(JNIEnv* env, jobject /*thiz*/, jlong handle,
     }
 
     size_t needed = 0;
-    spk_bake_cube_lut(eng, &params, size, nullptr, 0, &needed);
+    spk_bake_cube_lut(eng, &params, size, shaper, nullptr, 0, &needed);
     // The sizing pass returns SPK_ERR_BAD_ARGS (null buffer) but still sets
     // `needed`; needed==0 means a real failure (bad profile, internal) — surface it.
     if (needed == 0) {
         // Re-run to capture the actual status for a meaningful message.
-        spk_status probe = spk_bake_cube_lut(eng, &params, size, nullptr, 0, &needed);
+        spk_status probe = spk_bake_cube_lut(eng, &params, size, shaper, nullptr, 0, &needed);
         throw_status(env, probe == SPK_OK ? SPK_ERR_INTERNAL : probe);
         return nullptr;
     }
 
     std::vector<char> buf(needed);
-    spk_status st = spk_bake_cube_lut(eng, &params, size, buf.data(), buf.size(),
+    spk_status st = spk_bake_cube_lut(eng, &params, size, shaper, buf.data(), buf.size(),
                                       &needed);
     if (st != SPK_OK) { throw_status(env, st); return nullptr; }
     return env->NewStringUTF(buf.data());

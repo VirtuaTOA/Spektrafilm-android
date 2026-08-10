@@ -283,6 +283,7 @@ private class LutRenderer(private val onUnavailable: () -> Unit) : GLSurfaceView
         private const val VERT = """#version 300 es
             uniform vec2 uScale;
             out vec2 vUv;
+
             void main() {
                 float x = float(gl_VertexID & 1);
                 float y = float((gl_VertexID >> 1) & 1);
@@ -298,13 +299,21 @@ private class LutRenderer(private val onUnavailable: () -> Unit) : GLSurfaceView
             uniform sampler3D uLut;
             uniform float uExposureGain;
             out vec4 fragColor;
+            // EXACT inverse of shaper_to_linear in spektra.cpp. The LUT's entries are spaced
+            // evenly in this encoded space, so the lookup must be indexed through it or
+            // every value lands on the wrong lattice cell.
+            vec3 shaperEncode(vec3 c) {
+                return mix(c * 12.92,
+                           1.055 * pow(max(c, 0.0), vec3(1.0 / 2.4)) - 0.055,
+                           step(vec3(0.0031308), c));
+            }
             void main() {
                 // Auto-exposure gain FIRST: the LUT is baked at unity gain (a 3D LUT
                 // cannot carry AE), so this reproduces the global scale simulate()
                 // applies in preprocess_geometry before the film stage. Then clamp to
                 // the LUT's [0,1] linear-ProPhoto domain.
                 vec3 lin = texture(uProxy, vUv).rgb * uExposureGain;
-                vec3 c = clamp(lin, 0.0, 1.0);
+                vec3 c = shaperEncode(clamp(lin, 0.0, 1.0));
                 // LUT axes are (B,G,R) fastest->slowest (see uploadLut), so index (b,g,r).
                 vec3 outc = texture(uLut, vec3(c.b, c.g, c.r)).rgb;
                 fragColor = vec4(outc, 1.0);

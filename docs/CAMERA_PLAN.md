@@ -429,6 +429,22 @@ contrast, the creative grade (once §5's `ColorGrade` fold-in is done).
   sensor metadata rather than trusting the preview for exposure.
 - **Whatever ISP processing Phase 0b failed to switch off.**
 
+## 8c. Proposed: vintage EV-compensation meter (not built)
+
+A match-needle exposure meter along the viewfinder edge, in the idiom of an SLR finder:
+a scale with a centre notch and a needle showing the current reading. FUNCTIONAL, not
+decoration — dragging the needle applies exposure compensation, and the reading reflects
+what the engine will actually do.
+
+It has a real advantage over a numeric EV readout: the app already meters through
+`spk_meter_exposure_ev`, so the needle can show the ENGINE's exposure decision rather
+than the sensor's, which is the number that determines where the scene lands on the film
+curve. Compensation would feed `camera.exposureCompensationEv`, so it flows through the
+same path a capture uses.
+
+Pairs naturally with the focusing-screen overlay (split-image centre, microprism collar,
+vignette) and 35 mm frame lines — one overlay layer above the viewfinder.
+
 ## 10. Open decisions
 
 | # | Decision | Recommendation |

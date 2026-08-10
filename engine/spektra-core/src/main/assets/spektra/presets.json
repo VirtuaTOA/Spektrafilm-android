@@ -1,11 +1,11 @@
 {
-  "_comment": "One neutral preset per camera film stock. Engine defaults + grain / halation / DIR couplers on, output saturation -15, print stock by family (cine -> kodak_2383, Fuji -> crystal archive, otherwise portra_endura), slide stocks via scanFilm. Grain is deliberately left at the engine default - see docs/CAMERA_PLAN.md for why ISO-derived particle areas were withdrawn.",
+  "_comment": "One neutral preset per camera film stock. Engine defaults + grain / halation / DIR couplers on, a neutral output grade, print stock by family (cine -> kodak_2383, Fuji -> crystal archive, otherwise portra_endura), slide stocks via scanFilm. Grain is deliberately left at the engine default - see docs/CAMERA_PLAN.md for why ISO-derived particle areas were withdrawn.",
   "presets": [
     {
       "id": "stock_kodak_portra_160",
       "name": "PORTRA 160",
       "group": "Negative",
-      "description": "Kodak Portra 160 \u2014 ISO 160. Neutral rendering: engine defaults plus grain, halation and DIR couplers on, output saturation -15. Grain is at the engine default pending calibration: the ISO-derived particle areas drove particle counts into a pathological branch of the binomial sampler.",
+      "description": "Kodak Portra 160 \u2014 ISO 160. Neutral rendering: engine defaults plus grain, halation and DIR couplers on, neutral output grade. Grain is at the engine default pending calibration: the ISO-derived particle areas drove particle counts into a pathological branch of the binomial sampler.",
       "params": {
         "filmProfile": "kodak_portra_160",
         "printProfile": "kodak_portra_endura",
@@ -14,7 +14,7 @@
           "outputColorSpace": "SRGB"
         },
         "grade": {
-          "saturation": -15.0
+          "saturation": 0.0
         },
         "filmRender": {
           "grain": {
@@ -33,7 +33,7 @@
       "id": "stock_kodak_portra_400",
       "name": "PORTRA 400",
       "group": "Negative",
-      "description": "Kodak Portra 400 \u2014 ISO 400. Neutral rendering: engine defaults plus grain, halation and DIR couplers on, output saturation -15. Grain is at the engine default pending calibration: the ISO-derived particle areas drove particle counts into a pathological branch of the binomial sampler.",
+      "description": "Kodak Portra 400 \u2014 ISO 400. Neutral rendering: engine defaults plus grain, halation and DIR couplers on, neutral output grade. Grain is at the engine default pending calibration: the ISO-derived particle areas drove particle counts into a pathological branch of the binomial sampler.",
       "params": {
         "filmProfile": "kodak_portra_400",
         "printProfile": "kodak_portra_endura",
@@ -42,7 +42,7 @@
           "outputColorSpace": "SRGB"
         },
         "grade": {
-          "saturation": -15.0
+          "saturation": 0.0
         },
         "filmRender": {
           "grain": {
@@ -61,7 +61,7 @@
       "id": "stock_kodak_portra_800",
       "name": "PORTRA 800",
       "group": "Negative",
-      "description": "Kodak Portra 800 \u2014 ISO 800. Neutral rendering: engine defaults plus grain, halation and DIR couplers on, output saturation -15. Grain is at the engine default pending calibration: the ISO-derived particle areas drove particle counts into a pathological branch of the binomial sampler.",
+      "description": "Kodak Portra 800 \u2014 ISO 800. Neutral rendering: engine defaults plus grain, halation and DIR couplers on, neutral output grade. Grain is at the engine default pending calibration: the ISO-derived particle areas drove particle counts into a pathological branch of the binomial sampler.",
       "params": {
         "filmProfile": "kodak_portra_800",
         "printProfile": "kodak_portra_endura",
@@ -70,7 +70,7 @@
           "outputColorSpace": "SRGB"
         },
         "grade": {
-          "saturation": -15.0
+          "saturation": 0.0
         },
         "filmRender": {
           "grain": {
@@ -89,7 +89,7 @@
       "id": "stock_kodak_portra_800_push1",
       "name": "PORTRA 800 +1",
       "group": "Negative",
-      "description": "Kodak Portra 800 (Push +1) \u2014 ISO 1600. Neutral rendering: engine defaults plus grain, halation and DIR couplers on, output saturation -15. Grain is at the engine default pending calibration: the ISO-derived particle areas drove particle counts into a pathological branch of the binomial sampler.",
+      "description": "Kodak Portra 800 (Push +1) \u2014 ISO 1600. Neutral rendering: engine defaults plus grain, halation and DIR couplers on, neutral output grade. Grain is at the engine default pending calibration: the ISO-derived particle areas drove particle counts into a pathological branch of the binomial sampler.",
       "params": {
         "filmProfile": "kodak_portra_800_push1",
         "printProfile": "kodak_portra_endura",
@@ -98,7 +98,7 @@
           "outputColorSpace": "SRGB"
         },
         "grade": {
-          "saturation": -15.0
+          "saturation": 0.0
         },
         "filmRender": {
           "grain": {
@@ -117,7 +117,7 @@
       "id": "stock_kodak_portra_800_push2",
       "name": "PORTRA 800 +2",
       "group": "Negative",
-      "description": "Kodak Portra 800 (Push +2) \u2014 ISO 3200. Neutral rendering: engine defaults plus grain, halation and DIR couplers on, output saturation -15. Grain is at the engine default pending calibration: the ISO-derived particle areas drove particle counts into a pathological branch of the binomial sampler.",
+      "description": "Kodak Portra 800 (Push +2) \u2014 ISO 3200. Neutral rendering: engine defaults plus grain, halation and DIR couplers on, neutral output grade. Grain is at the engine default pending calibration: the ISO-derived particle areas drove particle counts into a pathological branch of the binomial sampler.",
       "params": {
         "filmProfile": "kodak_portra_800_push2",
         "printProfile": "kodak_portra_endura",
@@ -126,7 +126,7 @@
           "outputColorSpace": "SRGB"
         },
         "grade": {
-          "saturation": -15.0
+          "saturation": 0.0
         },
         "filmRender": {
           "grain": {
@@ -145,7 +145,7 @@
       "id": "stock_kodak_ektar_100",
       "name": "EKTAR 100",
       "group": "Negative",
-      "description": "Kodak Ektar 100 \u2014 ISO 100. Neutral rendering: engine defaults plus grain, halation and DIR couplers on, output saturation -15. Grain is at the engine default pending calibration: the ISO-derived particle areas drove particle counts into a pathological branch of the binomial sampler.",
+      "description": "Kodak Ektar 100 \u2014 ISO 100. Neutral rendering: engine defaults plus grain, halation and DIR couplers on, neutral output grade. Grain is at the engine default pending calibration: the ISO-derived particle areas drove particle counts into a pathological branch of the binomial sampler.",
       "params": {
         "filmProfile": "kodak_ektar_100",
         "printProfile": "kodak_portra_endura",
@@ -154,7 +154,7 @@
           "outputColorSpace": "SRGB"
         },
         "grade": {
-          "saturation": -15.0
+          "saturation": 0.0
         },
         "filmRender": {
           "grain": {
@@ -173,7 +173,7 @@
       "id": "stock_kodak_gold_200",
       "name": "GOLD 200",
       "group": "Negative",
-      "description": "Kodak Gold 200 \u2014 ISO 200. Neutral rendering: engine defaults plus grain, halation and DIR couplers on, output saturation -15. Grain is at the engine default pending calibration: the ISO-derived particle areas drove particle counts into a pathological branch of the binomial sampler.",
+      "description": "Kodak Gold 200 \u2014 ISO 200. Neutral rendering: engine defaults plus grain, halation and DIR couplers on, neutral output grade. Grain is at the engine default pending calibration: the ISO-derived particle areas drove particle counts into a pathological branch of the binomial sampler.",
       "params": {
         "filmProfile": "kodak_gold_200",
         "printProfile": "kodak_portra_endura",
@@ -182,7 +182,7 @@
           "outputColorSpace": "SRGB"
         },
         "grade": {
-          "saturation": -15.0
+          "saturation": 0.0
         },
         "filmRender": {
           "grain": {
@@ -201,7 +201,7 @@
       "id": "stock_kodak_ultramax_400",
       "name": "ULTRAMAX 400",
       "group": "Negative",
-      "description": "Kodak UltraMax 400 \u2014 ISO 400. Neutral rendering: engine defaults plus grain, halation and DIR couplers on, output saturation -15. Grain is at the engine default pending calibration: the ISO-derived particle areas drove particle counts into a pathological branch of the binomial sampler.",
+      "description": "Kodak UltraMax 400 \u2014 ISO 400. Neutral rendering: engine defaults plus grain, halation and DIR couplers on, neutral output grade. Grain is at the engine default pending calibration: the ISO-derived particle areas drove particle counts into a pathological branch of the binomial sampler.",
       "params": {
         "filmProfile": "kodak_ultramax_400",
         "printProfile": "kodak_portra_endura",
@@ -210,7 +210,7 @@
           "outputColorSpace": "SRGB"
         },
         "grade": {
-          "saturation": -15.0
+          "saturation": 0.0
         },
         "filmRender": {
           "grain": {
@@ -229,7 +229,7 @@
       "id": "stock_kodak_vision3_50d",
       "name": "VISION3 50D",
       "group": "Negative",
-      "description": "Kodak Vision3 50D (5203/7203) \u2014 ISO 50. Neutral rendering: engine defaults plus grain, halation and DIR couplers on, output saturation -15. Grain is at the engine default pending calibration: the ISO-derived particle areas drove particle counts into a pathological branch of the binomial sampler.",
+      "description": "Kodak Vision3 50D (5203/7203) \u2014 ISO 50. Neutral rendering: engine defaults plus grain, halation and DIR couplers on, neutral output grade. Grain is at the engine default pending calibration: the ISO-derived particle areas drove particle counts into a pathological branch of the binomial sampler.",
       "params": {
         "filmProfile": "kodak_vision3_50d",
         "printProfile": "kodak_2383",
@@ -238,7 +238,7 @@
           "outputColorSpace": "SRGB"
         },
         "grade": {
-          "saturation": -15.0
+          "saturation": 0.0
         },
         "filmRender": {
           "grain": {
@@ -257,7 +257,7 @@
       "id": "stock_kodak_vision3_200t",
       "name": "VISION3 200T",
       "group": "Negative",
-      "description": "Kodak Vision3 200T (5213/7213) \u2014 ISO 200. Neutral rendering: engine defaults plus grain, halation and DIR couplers on, output saturation -15. Grain is at the engine default pending calibration: the ISO-derived particle areas drove particle counts into a pathological branch of the binomial sampler.",
+      "description": "Kodak Vision3 200T (5213/7213) \u2014 ISO 200. Neutral rendering: engine defaults plus grain, halation and DIR couplers on, neutral output grade. Grain is at the engine default pending calibration: the ISO-derived particle areas drove particle counts into a pathological branch of the binomial sampler.",
       "params": {
         "filmProfile": "kodak_vision3_200t",
         "printProfile": "kodak_2383",
@@ -266,7 +266,7 @@
           "outputColorSpace": "SRGB"
         },
         "grade": {
-          "saturation": -15.0
+          "saturation": 0.0
         },
         "filmRender": {
           "grain": {
@@ -285,7 +285,7 @@
       "id": "stock_kodak_verita_200d",
       "name": "VERITA 200D",
       "group": "Negative",
-      "description": "Kodak Verita 200D (5206/7206) \u2014 ISO 200. Neutral rendering: engine defaults plus grain, halation and DIR couplers on, output saturation -15. Grain is at the engine default pending calibration: the ISO-derived particle areas drove particle counts into a pathological branch of the binomial sampler.",
+      "description": "Kodak Verita 200D (5206/7206) \u2014 ISO 200. Neutral rendering: engine defaults plus grain, halation and DIR couplers on, neutral output grade. Grain is at the engine default pending calibration: the ISO-derived particle areas drove particle counts into a pathological branch of the binomial sampler.",
       "params": {
         "filmProfile": "kodak_verita_200d",
         "printProfile": "kodak_2383",
@@ -294,7 +294,7 @@
           "outputColorSpace": "SRGB"
         },
         "grade": {
-          "saturation": -15.0
+          "saturation": 0.0
         },
         "filmRender": {
           "grain": {
@@ -313,7 +313,7 @@
       "id": "stock_kodak_vision3_250d",
       "name": "VISION3 250D",
       "group": "Negative",
-      "description": "Kodak Vision3 250D (5207/7207) \u2014 ISO 250. Neutral rendering: engine defaults plus grain, halation and DIR couplers on, output saturation -15. Grain is at the engine default pending calibration: the ISO-derived particle areas drove particle counts into a pathological branch of the binomial sampler.",
+      "description": "Kodak Vision3 250D (5207/7207) \u2014 ISO 250. Neutral rendering: engine defaults plus grain, halation and DIR couplers on, neutral output grade. Grain is at the engine default pending calibration: the ISO-derived particle areas drove particle counts into a pathological branch of the binomial sampler.",
       "params": {
         "filmProfile": "kodak_vision3_250d",
         "printProfile": "kodak_2383",
@@ -322,7 +322,7 @@
           "outputColorSpace": "SRGB"
         },
         "grade": {
-          "saturation": -15.0
+          "saturation": 0.0
         },
         "filmRender": {
           "grain": {
@@ -341,7 +341,7 @@
       "id": "stock_kodak_vision3_500t",
       "name": "VISION3 500T",
       "group": "Negative",
-      "description": "Kodak Vision3 500T (5219/7219) \u2014 ISO 500. Neutral rendering: engine defaults plus grain, halation and DIR couplers on, output saturation -15. Grain is at the engine default pending calibration: the ISO-derived particle areas drove particle counts into a pathological branch of the binomial sampler.",
+      "description": "Kodak Vision3 500T (5219/7219) \u2014 ISO 500. Neutral rendering: engine defaults plus grain, halation and DIR couplers on, neutral output grade. Grain is at the engine default pending calibration: the ISO-derived particle areas drove particle counts into a pathological branch of the binomial sampler.",
       "params": {
         "filmProfile": "kodak_vision3_500t",
         "printProfile": "kodak_2383",
@@ -350,7 +350,7 @@
           "outputColorSpace": "SRGB"
         },
         "grade": {
-          "saturation": -15.0
+          "saturation": 0.0
         },
         "filmRender": {
           "grain": {
@@ -369,7 +369,7 @@
       "id": "stock_fujifilm_c200",
       "name": "C200",
       "group": "Negative",
-      "description": "Fujifilm C200 \u2014 ISO 200. Neutral rendering: engine defaults plus grain, halation and DIR couplers on, output saturation -15. Grain is at the engine default pending calibration: the ISO-derived particle areas drove particle counts into a pathological branch of the binomial sampler.",
+      "description": "Fujifilm C200 \u2014 ISO 200. Neutral rendering: engine defaults plus grain, halation and DIR couplers on, neutral output grade. Grain is at the engine default pending calibration: the ISO-derived particle areas drove particle counts into a pathological branch of the binomial sampler.",
       "params": {
         "filmProfile": "fujifilm_c200",
         "printProfile": "fujifilm_crystal_archive_typeii",
@@ -378,7 +378,7 @@
           "outputColorSpace": "SRGB"
         },
         "grade": {
-          "saturation": -15.0
+          "saturation": 0.0
         },
         "filmRender": {
           "grain": {
@@ -397,7 +397,7 @@
       "id": "stock_fujifilm_pro_400h",
       "name": "PRO 400H",
       "group": "Negative",
-      "description": "Fujifilm Pro 400H \u2014 ISO 400. Neutral rendering: engine defaults plus grain, halation and DIR couplers on, output saturation -15. Grain is at the engine default pending calibration: the ISO-derived particle areas drove particle counts into a pathological branch of the binomial sampler.",
+      "description": "Fujifilm Pro 400H \u2014 ISO 400. Neutral rendering: engine defaults plus grain, halation and DIR couplers on, neutral output grade. Grain is at the engine default pending calibration: the ISO-derived particle areas drove particle counts into a pathological branch of the binomial sampler.",
       "params": {
         "filmProfile": "fujifilm_pro_400h",
         "printProfile": "fujifilm_crystal_archive_typeii",
@@ -406,7 +406,7 @@
           "outputColorSpace": "SRGB"
         },
         "grade": {
-          "saturation": -15.0
+          "saturation": 0.0
         },
         "filmRender": {
           "grain": {
@@ -425,7 +425,7 @@
       "id": "stock_fujifilm_xtra_400",
       "name": "SUPERIA 400",
       "group": "Negative",
-      "description": "Fujifilm Superia X-TRA 400 \u2014 ISO 400. Neutral rendering: engine defaults plus grain, halation and DIR couplers on, output saturation -15. Grain is at the engine default pending calibration: the ISO-derived particle areas drove particle counts into a pathological branch of the binomial sampler.",
+      "description": "Fujifilm Superia X-TRA 400 \u2014 ISO 400. Neutral rendering: engine defaults plus grain, halation and DIR couplers on, neutral output grade. Grain is at the engine default pending calibration: the ISO-derived particle areas drove particle counts into a pathological branch of the binomial sampler.",
       "params": {
         "filmProfile": "fujifilm_xtra_400",
         "printProfile": "fujifilm_crystal_archive_typeii",
@@ -434,7 +434,7 @@
           "outputColorSpace": "SRGB"
         },
         "grade": {
-          "saturation": -15.0
+          "saturation": 0.0
         },
         "filmRender": {
           "grain": {
@@ -453,7 +453,7 @@
       "id": "stock_kodak_kodachrome_64",
       "name": "KODACHROME 64",
       "group": "Slide",
-      "description": "Kodak Kodachrome 64 \u2014 ISO 64. Neutral rendering: engine defaults plus grain, halation and DIR couplers on, output saturation -15. Grain is at the engine default pending calibration: the ISO-derived particle areas drove particle counts into a pathological branch of the binomial sampler.",
+      "description": "Kodak Kodachrome 64 \u2014 ISO 64. Neutral rendering: engine defaults plus grain, halation and DIR couplers on, neutral output grade. Grain is at the engine default pending calibration: the ISO-derived particle areas drove particle counts into a pathological branch of the binomial sampler.",
       "params": {
         "filmProfile": "kodak_kodachrome_64",
         "printProfile": "kodak_portra_endura",
@@ -462,7 +462,7 @@
           "outputColorSpace": "SRGB"
         },
         "grade": {
-          "saturation": -15.0
+          "saturation": 0.0
         },
         "filmRender": {
           "grain": {
@@ -481,7 +481,7 @@
       "id": "stock_kodak_ektachrome_100",
       "name": "EKTACHROME 100",
       "group": "Slide",
-      "description": "Kodak Ektachrome E100 \u2014 ISO 100. Neutral rendering: engine defaults plus grain, halation and DIR couplers on, output saturation -15. Grain is at the engine default pending calibration: the ISO-derived particle areas drove particle counts into a pathological branch of the binomial sampler.",
+      "description": "Kodak Ektachrome E100 \u2014 ISO 100. Neutral rendering: engine defaults plus grain, halation and DIR couplers on, neutral output grade. Grain is at the engine default pending calibration: the ISO-derived particle areas drove particle counts into a pathological branch of the binomial sampler.",
       "params": {
         "filmProfile": "kodak_ektachrome_100",
         "printProfile": "kodak_portra_endura",
@@ -490,7 +490,7 @@
           "outputColorSpace": "SRGB"
         },
         "grade": {
-          "saturation": -15.0
+          "saturation": 0.0
         },
         "filmRender": {
           "grain": {
@@ -509,7 +509,7 @@
       "id": "stock_fujifilm_provia_100f",
       "name": "PROVIA 100F",
       "group": "Slide",
-      "description": "Fujifilm Provia 100F \u2014 ISO 100. Neutral rendering: engine defaults plus grain, halation and DIR couplers on, output saturation -15. Grain is at the engine default pending calibration: the ISO-derived particle areas drove particle counts into a pathological branch of the binomial sampler.",
+      "description": "Fujifilm Provia 100F \u2014 ISO 100. Neutral rendering: engine defaults plus grain, halation and DIR couplers on, neutral output grade. Grain is at the engine default pending calibration: the ISO-derived particle areas drove particle counts into a pathological branch of the binomial sampler.",
       "params": {
         "filmProfile": "fujifilm_provia_100f",
         "printProfile": "fujifilm_crystal_archive_typeii",
@@ -518,7 +518,7 @@
           "outputColorSpace": "SRGB"
         },
         "grade": {
-          "saturation": -15.0
+          "saturation": 0.0
         },
         "filmRender": {
           "grain": {
@@ -537,7 +537,7 @@
       "id": "stock_fujifilm_velvia_100",
       "name": "VELVIA 100",
       "group": "Slide",
-      "description": "Fujifilm Velvia 100 \u2014 ISO 100. Neutral rendering: engine defaults plus grain, halation and DIR couplers on, output saturation -15. Grain is at the engine default pending calibration: the ISO-derived particle areas drove particle counts into a pathological branch of the binomial sampler.",
+      "description": "Fujifilm Velvia 100 \u2014 ISO 100. Neutral rendering: engine defaults plus grain, halation and DIR couplers on, neutral output grade. Grain is at the engine default pending calibration: the ISO-derived particle areas drove particle counts into a pathological branch of the binomial sampler.",
       "params": {
         "filmProfile": "fujifilm_velvia_100",
         "printProfile": "fujifilm_crystal_archive_typeii",
@@ -546,7 +546,7 @@
           "outputColorSpace": "SRGB"
         },
         "grade": {
-          "saturation": -15.0
+          "saturation": 0.0
         },
         "filmRender": {
           "grain": {
