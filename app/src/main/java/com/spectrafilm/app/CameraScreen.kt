@@ -30,6 +30,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.snapping.rememberSnapFlingBehavior
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.PaddingValues
@@ -60,6 +61,7 @@ import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
@@ -180,8 +182,13 @@ private fun CameraScreenSupported() {
     }
 
     // A separate list state per process, so switching does not leave the scroller parked
-    // at an index the new (shorter) list does not have.
-    val listState = remember(slideMode) { LazyListState() }
+    // at an index the new (shorter) list does not have. The chosen stock is REMEMBERED
+    // across configuration changes: rotating recreates the Activity, and a fresh
+    // LazyListState would silently reset the selection to the first stock.
+    var savedStock by rememberSaveable(slideMode) { mutableIntStateOf(0) }
+    val listState = remember(slideMode) {
+        LazyListState(firstVisibleItemIndex = savedStock)
+    }
     // The centred item IS the selection — the point of a snapping scroller.
     val centred by remember(listState) {
         derivedStateOf {
@@ -191,6 +198,7 @@ private fun CameraScreenSupported() {
         }
     }
     val stockIndex = centred.coerceIn(0, stocks.lastIndex)
+    LaunchedEffect(stockIndex) { savedStock = stockIndex }
     val stock = stocks[stockIndex]
 
     // A FRESH ParamsState per stock, so switching never inherits the previous one; the
@@ -686,9 +694,11 @@ private fun StockScroller(
     listState: LazyListState,
     onPick: (Int) -> Unit,
 ) {
-    // Half a screen minus half an item, so the first and last entries can reach the centre.
-    val screenW = LocalConfiguration.current.screenWidthDp.dp
-    val sidePad = ((screenW - STOCK_ITEM_WIDTH) / 2).coerceAtLeast(0.dp)
+    // Padding is measured from THIS COMPOSABLE's width, not the screen's. In landscape the
+    // scroller sits in a 300dp panel while the screen is ~800dp wide, so screen-derived
+    // padding pushed every item off both edges — the list looked empty until you swiped it.
+    BoxWithConstraints(Modifier.fillMaxWidth()) {
+    val sidePad = ((maxWidth - STOCK_ITEM_WIDTH) / 2).coerceAtLeast(0.dp)
     LazyRow(
         state = listState,
         flingBehavior = rememberSnapFlingBehavior(lazyListState = listState),
@@ -712,6 +722,7 @@ private fun StockScroller(
                 )
             }
         }
+    }
     }
 }
 
