@@ -69,6 +69,8 @@ import javax.microedition.khronos.opengles.GL10
 fun CameraGlPreview(
     uvRotationDegrees: Int,
     displayAspect: Float,
+    cropU: Float,
+    cropV: Float,
     wideGamut: Boolean,
     bufferWidth: Int,
     bufferHeight: Int,
@@ -89,6 +91,7 @@ fun CameraGlPreview(
     renderer.setBufferSize(bufferWidth, bufferHeight)
     renderer.setDisplayAspect(displayAspect)
     renderer.setWideGamut(wideGamut)
+    renderer.setCrop(cropU, cropV)
     DisposableEffect(Unit) { onDispose { renderer.release() } }
     AndroidView(
         modifier = modifier,
@@ -147,6 +150,10 @@ private class CameraLutRenderer(
     // Set when the session negotiated Display P3 for the preview. Selects which primaries
     // matrix converts the camera stream into the LUT's ProPhoto domain.
     @Volatile private var wideGamut = false
+    // 35 mm is 3:2, the sensor is 4:3 — the viewfinder shows the 3:2 region that will
+    // actually be kept, so framing is what you get rather than what the sensor saw.
+    @Volatile private var cropU = 1f
+    @Volatile private var cropV = 1f
     @Volatile private var gain = 1f
     @Volatile private var pendingLut: CubeLut? = null
     @Volatile private var haveLut = false
@@ -171,6 +178,12 @@ private class CameraLutRenderer(
     }
 
     fun setWideGamut(v: Boolean) { wideGamut = v }
+
+    /** Fraction of the buffer sampled on each axis, about its centre. 1 = no crop. */
+    fun setCrop(u: Float, v: Float) {
+        if (u.isFinite() && u > 0f) cropU = u
+        if (v.isFinite() && v > 0f) cropV = v
+    }
 
     fun submit(rotationDegrees: Int, lut: CubeLut?, exposureGain: Float) {
         rotation = ((rotationDegrees % 360) + 360) % 360
@@ -280,6 +293,7 @@ private class CameraLutRenderer(
         GLES30.glUniform1i(GLES30.glGetUniformLocation(program, "uUseLut"), if (haveLut) 1 else 0)
         GLES30.glUniform1f(GLES30.glGetUniformLocation(program, "uExposureGain"), gain)
         GLES30.glUniform1i(GLES30.glGetUniformLocation(program, "uWideGamut"), if (wideGamut) 1 else 0)
+        GLES30.glUniform2f(GLES30.glGetUniformLocation(program, "uCrop"), cropU, cropV)
         GLES30.glUniformMatrix4fv(
             GLES30.glGetUniformLocation(program, "uTexMatrix"), 1, false, texMatrix, 0,
         )
@@ -369,6 +383,7 @@ private class CameraLutRenderer(
             uniform mat4 uTexMatrix;
             uniform vec2 uScale;
             uniform float uRotation;
+            uniform vec2 uCrop;
             out vec2 vUv;
             void main() {
                 float x = float(gl_VertexID & 1);
@@ -377,7 +392,11 @@ private class CameraLutRenderer(
                 float s = sin(uRotation), c = cos(uRotation);
                 vec2 d = q - 0.5;
                 vec2 r = vec2(c * d.x - s * d.y, s * d.x + c * d.y) + 0.5;
-                vUv = (uTexMatrix * vec4(r, 0.0, 1.0)).xy;
+                // Crop AFTER the rotation, so it acts in the buffer's own axes no matter
+                // how the quad was turned, and BEFORE uTexMatrix, which maps into the
+                // texture's actual region.
+                vec2 c = (r - 0.5) * uCrop + 0.5;
+                vUv = (uTexMatrix * vec4(c, 0.0, 1.0)).xy;
                 gl_Position = vec4((q * 2.0 - 1.0) * uScale, 0.0, 1.0);
             }
         """

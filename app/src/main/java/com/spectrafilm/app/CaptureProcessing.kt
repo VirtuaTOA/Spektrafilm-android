@@ -112,6 +112,32 @@ object CaptureQueue {
  * Drains [CaptureQueue] in the background. Started after every capture; stops itself once
  * the queue is empty, so it never lingers holding a notification for no reason.
  */
+/**
+ * Crop [src] to the 35 mm 3:2 frame, about its centre, keeping the longer side. Returns
+ * [src] unchanged when it is already 3:2 (within a pixel), so nothing is copied needlessly.
+ */
+private fun cropToFilmAspect(src: android.graphics.Bitmap): android.graphics.Bitmap {
+    val w = src.width
+    val h = src.height
+    if (w <= 0 || h <= 0) return src
+    val landscape = w >= h
+    val targetW: Int
+    val targetH: Int
+    if (landscape) {
+        targetH = minOf(h, Math.round(w / 1.5f))
+        targetW = minOf(w, Math.round(targetH * 1.5f))
+    } else {
+        targetW = minOf(w, Math.round(h / 1.5f))
+        targetH = minOf(h, Math.round(targetW * 1.5f))
+    }
+    if (targetW >= w && targetH >= h) return src
+    val x = ((w - targetW) / 2).coerceAtLeast(0)
+    val y = ((h - targetH) / 2).coerceAtLeast(0)
+    return runCatching {
+        android.graphics.Bitmap.createBitmap(src, x, y, targetW, targetH)
+    }.getOrDefault(src)
+}
+
 class ProcessingService : Service() {
 
     private val running = AtomicBoolean(false)
@@ -189,10 +215,16 @@ class ProcessingService : Service() {
             image.close()
         }
         try {
-            val bmp = simResultToBitmapGraded(
+            val full = simResultToBitmapGraded(
                 result, state.savingCctfEncoding, state.saturation, state.vibrance,
                 state.gamutCompress, state.localAdjustments,
             )
+            // 35 mm is 3:2 and the sensor is 4:3, so the saved frame is cropped to the
+            // same region the viewfinder framed. Without this the photo would contain a
+            // band the user never saw — the mismatch that made captures look wider than
+            // the viewfinder before the preview aspect was fixed.
+            val bmp = cropToFilmAspect(full)
+            if (bmp !== full) full.recycle()
             val name = "SPK_" + java.text.SimpleDateFormat("yyyyMMdd_HHmmss", java.util.Locale.US)
                 .format(java.util.Date(job.createdMs))
             saveToGallery(this, bmp, ExportFormat.JPEG, 95, displayName = name)

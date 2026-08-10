@@ -55,12 +55,12 @@ fun HomeScreen(onShoot: () -> Unit, onEdit: () -> Unit) {
         Modifier.fillMaxSize().padding(horizontal = 24.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        Spacer(Modifier.height(124.dp))
+        Spacer(Modifier.height(168.dp))
 
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(
                 "SPEKTRAFILM",
-                style = MaterialTheme.typography.headlineSmall,
+                style = MaterialTheme.typography.headlineMedium,
                 fontWeight = FontWeight.Bold,
                 letterSpacing = 2.sp,
                 color = BRAND,
@@ -69,7 +69,7 @@ fun HomeScreen(onShoot: () -> Unit, onEdit: () -> Unit) {
             Image(
                 painter = painterResource(R.drawable.ic_launcher_foreground),
                 contentDescription = null,
-                modifier = Modifier.size(48.dp),
+                modifier = Modifier.size(64.dp),
             )
         }
 

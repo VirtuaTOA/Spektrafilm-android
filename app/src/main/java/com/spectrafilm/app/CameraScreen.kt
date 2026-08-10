@@ -31,6 +31,7 @@ import androidx.compose.foundation.gestures.snapping.rememberSnapFlingBehavior
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxHeight
@@ -91,6 +92,9 @@ private val UNSELECTED = Color(0xFF8A8A8A)
 private val STOCK_ITEM_WIDTH = 124.dp
 private val FOCUS_ITEM_WIDTH = 74.dp
 
+/** 35 mm frame: 36x24 mm. The sensor is 4:3; this is what the app keeps. */
+private const val FILM_ASPECT = 3f / 2f
+
 @Composable
 fun CameraScreen() {
     // Direct SDK_INT check, not CameraInventory.isSupported: lint's NewApi analysis follows
@@ -111,6 +115,9 @@ fun CameraScreen() {
 private fun CameraScreenSupported() {
     val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
+    val configuration = LocalConfiguration.current
+    val landscape = configuration.orientation ==
+        android.content.res.Configuration.ORIENTATION_LANDSCAPE
 
     var granted by remember { mutableStateOf(CameraInventory.hasPermission(ctx)) }
     var denied by remember { mutableStateOf(false) }
@@ -252,13 +259,24 @@ private fun CameraScreenSupported() {
     val previewSize = remember(lens) {
         CameraInventory.previewSize(ctx, lens.logicalId, lens.rawSize)
     }
-    val displayAspect = remember(rotation, previewSize) {
-        val srcA = previewSize.width.toFloat() / previewSize.height.toFloat()
-        if (rotation == 90 || rotation == 270) 1f / srcA else srcA
+    // 35 mm film is 3:2. The sensor is 4:3, so the viewfinder shows — and the capture
+    // keeps — the central 3:2 region: the app's output is film-shaped, not phone-shaped.
+    val displayRotation = remember(configuration) { displayRotationDegrees(ctx) }
+    val srcAspect = previewSize.width.toFloat() / previewSize.height.toFloat()
+    val crop = remember(srcAspect) {
+        // Sample only what survives the crop, about the buffer's centre.
+        if (srcAspect < FILM_ASPECT) 1f to (srcAspect / FILM_ASPECT)   // 4:3 -> trim height
+        else (FILM_ASPECT / srcAspect) to 1f                            // wider -> trim width
     }
-    // Device-verified 0 on SM-S931B: this driver's SurfaceTexture transform matrix already
-    // applies the sensor->display rotation (see CameraGlPreview).
-    val uvRotation = 0
+    val displayAspect = remember(rotation, srcAspect) {
+        if (rotation == 90 || rotation == 270) 1f / FILM_ASPECT else FILM_ASPECT
+    }
+    // The driver's SurfaceTexture transform already carries the sensor->display rotation
+    // FOR THE ORIENTATION THE STREAM WAS CONFIGURED IN — device-verified as 0 in portrait.
+    // It does not re-derive when the device turns, so rotating to landscape left the image
+    // turned by the display rotation. Counter-rotating by it keeps portrait at 0 (matching
+    // the verified case) and corrects every other orientation.
+    val uvRotation = ((360 - displayRotation) % 360 + 360) % 360
 
     var surface by remember { mutableStateOf<Surface?>(null) }
     // The session decides whether P3 was actually granted; the shader must only use the P3
@@ -328,30 +346,10 @@ private fun CameraScreenSupported() {
         }
     }
 
-    Box(Modifier.fillMaxSize().background(Color.Black)) {
-        CameraGlPreview(
-            uvRotationDegrees = uvRotation,
-            displayAspect = displayAspect,
-            wideGamut = wideGamut,
-            bufferWidth = previewSize.width,
-            bufferHeight = previewSize.height,
-            modifier = Modifier.fillMaxSize(),
-            lut = lut,
-            exposureGain = gain,
-            onSurfaceReady = { s -> surface = s },
-            onUnavailable = { error = "GPU viewfinder unavailable" },
-        )
-
-        if (flash.value > 0f) {
-            Box(
-                Modifier.fillMaxSize()
-                    .background(Color.Black.copy(alpha = flash.value.coerceIn(0f, 1f)))
-            )
-        }
-
-        // Top-right controls, sitting in the black bar above the viewfinder.
+    // Extracted so portrait and landscape share one definition: the arrangement differs,
+    // the controls do not.
+    val toggles: @Composable () -> Unit = {
         Row(
-            Modifier.align(Alignment.TopEnd).statusBarsPadding().padding(top = 6.dp, end = 16.dp),
             horizontalArrangement = Arrangement.spacedBy(6.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
@@ -375,92 +373,146 @@ private fun CameraScreenSupported() {
                 )
             }
         }
+    }
 
-        Column(
-            Modifier.align(Alignment.BottomCenter).fillMaxWidth()
-                .background(Color.Black)
-                .navigationBarsPadding()
-                .padding(top = 10.dp, bottom = 14.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(10.dp),
+    val controls: @Composable ColumnScope.() -> Unit = {
+        error?.let {
+            Text(it, color = Color(0xFFFF8A80), style = MaterialTheme.typography.bodySmall)
+        }
+        if (queued > 0) {
+            Text(
+                if (queued == 1) "1 photo rendering…" else "$queued photos rendering…",
+                color = UNSELECTED,
+                fontSize = 11.sp,
+                letterSpacing = 1.sp,
+            )
+        }
+
+        if (manualFocus) {
+            FocusWheel(
+                minDiopters = lens.minFocusDiopters,
+                diopters = focusDiopters,
+                onChange = { d ->
+                    focusDiopters = d
+                    session.setFocus(true, d)
+                },
+            )
+        }
+
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(14.dp),
         ) {
-            error?.let {
-                Text(it, color = Color(0xFFFF8A80), style = MaterialTheme.typography.bodySmall)
+            for (l in lenses) {
+                LensChip(label = l.label, selected = l == lens, onClick = { lens = l })
             }
-            if (queued > 0) {
-                Text(
-                    if (queued == 1) "1 photo rendering…" else "$queued photos rendering…",
-                    color = UNSELECTED,
-                    fontSize = 11.sp,
-                    letterSpacing = 1.sp,
+        }
+
+        StockScroller(
+            stocks = stocks,
+            selectedIndex = stockIndex,
+            listState = listState,
+            onPick = { i -> scope.launch { listState.animateScrollToItem(i) } },
+        )
+
+        ProcessToggle(slideMode = slideMode, onToggle = { slideMode = !slideMode })
+
+        ShutterButton(
+            enabled = canCapture && !capturing,
+            onClick = {
+                if (!canCapture) {
+                    error = "This lens cannot capture RAW"
+                    return@ShutterButton
+                }
+                capturing = true
+                shutterSound.play(android.media.MediaActionSound.SHUTTER_CLICK)
+                scope.launch {
+                    flash.snapTo(1f)
+                    flash.animateTo(
+                        0f,
+                        androidx.compose.animation.core.tween(durationMillis = 260),
+                    )
+                }
+                val target = java.io.File(
+                    CaptureQueue.captureDir(ctx),
+                    "SPK_${System.currentTimeMillis()}.dng",
+                )
+                session.capture(target, displayRotationDegrees(ctx)) { file, err ->
+                    capturing = false
+                    if (file == null) {
+                        error = err ?: "capture failed"
+                    } else {
+                        error = null
+                        ProcessingService.enqueue(
+                            ctx,
+                            CaptureJob(file.absolutePath, stock.id, System.currentTimeMillis()),
+                        )
+                        queued = CaptureQueue.pending(ctx)
+                    }
+                }
+            },
+        )
+    }
+
+    val viewfinder: @Composable () -> Unit = {
+        Box(Modifier.fillMaxSize()) {
+            CameraGlPreview(
+                uvRotationDegrees = uvRotation,
+                displayAspect = displayAspect,
+                cropU = crop.first,
+                cropV = crop.second,
+                wideGamut = wideGamut,
+                bufferWidth = previewSize.width,
+                bufferHeight = previewSize.height,
+                modifier = Modifier.fillMaxSize(),
+                lut = lut,
+                exposureGain = gain,
+                onSurfaceReady = { s -> surface = s },
+                onUnavailable = { error = "GPU viewfinder unavailable" },
+            )
+            if (flash.value > 0f) {
+                Box(
+                    Modifier.fillMaxSize()
+                        .background(Color.Black.copy(alpha = flash.value.coerceIn(0f, 1f)))
                 )
             }
+        }
+    }
 
-            if (manualFocus) {
-                FocusWheel(
-                    minDiopters = lens.minFocusDiopters,
-                    diopters = focusDiopters,
-                    onChange = { d ->
-                        focusDiopters = d
-                        session.setFocus(true, d)
-                    },
-                )
-            }
-
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(14.dp),
-            ) {
-                for (l in lenses) {
-                    LensChip(label = l.label, selected = l == lens, onClick = { lens = l })
+    Box(Modifier.fillMaxSize().background(Color.Black)) {
+        if (landscape) {
+            // Side-by-side: the viewfinder takes the width it can and the controls become a
+            // right-hand panel. Stacking them vertically (the portrait arrangement) left the
+            // viewfinder a squashed strip with a wall of black beneath it.
+            Row(Modifier.fillMaxSize()) {
+                Box(Modifier.weight(1f).fillMaxHeight()) { viewfinder() }
+                Column(
+                    Modifier.width(300.dp).fillMaxHeight()
+                        .background(Color.Black)
+                        .statusBarsPadding()
+                        .navigationBarsPadding()
+                        .padding(horizontal = 8.dp, vertical = 12.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(10.dp, Alignment.CenterVertically),
+                ) {
+                    toggles()
+                    controls()
                 }
             }
-
-            StockScroller(
-                stocks = stocks,
-                selectedIndex = stockIndex,
-                listState = listState,
-                onPick = { i -> scope.launch { listState.animateScrollToItem(i) } },
-            )
-
-            ProcessToggle(slideMode = slideMode, onToggle = { slideMode = !slideMode })
-
-            ShutterButton(
-                enabled = canCapture && !capturing,
-                onClick = {
-                    if (!canCapture) {
-                        error = "This lens cannot capture RAW"
-                        return@ShutterButton
-                    }
-                    capturing = true
-                    shutterSound.play(android.media.MediaActionSound.SHUTTER_CLICK)
-                    scope.launch {
-                        flash.snapTo(1f)
-                        flash.animateTo(
-                            0f,
-                            androidx.compose.animation.core.tween(durationMillis = 260),
-                        )
-                    }
-                    val target = java.io.File(
-                        CaptureQueue.captureDir(ctx),
-                        "SPK_${System.currentTimeMillis()}.dng",
-                    )
-                    session.capture(target, displayRotationDegrees(ctx)) { file, err ->
-                        capturing = false
-                        if (file == null) {
-                            error = err ?: "capture failed"
-                        } else {
-                            error = null
-                            // The DNG is on disk; rendering happens in the background so the
-                            // viewfinder is usable again immediately.
-                            ProcessingService.enqueue(
-                                ctx,
-                                CaptureJob(file.absolutePath, stock.id, System.currentTimeMillis()),
-                            )
-                            queued = CaptureQueue.pending(ctx)
-                        }
-                    }
-                },
+        } else {
+            viewfinder()
+            Box(
+                Modifier.align(Alignment.TopEnd).statusBarsPadding()
+                    .padding(top = 6.dp, end = 16.dp),
+            ) { toggles() }
+            Column(
+                Modifier.align(Alignment.BottomCenter).fillMaxWidth()
+                    .background(Color.Black)
+                    .navigationBarsPadding()
+                    .padding(top = 10.dp, bottom = 14.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+                content = controls,
             )
         }
     }
