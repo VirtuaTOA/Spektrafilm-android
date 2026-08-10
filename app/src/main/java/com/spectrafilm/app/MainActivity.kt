@@ -1146,7 +1146,14 @@ class MainActivity : ComponentActivity() {
                 withContext(Dispatchers.Default) {
                     val img = loadSourceCachedForPreview(state.previewMaxSize.coerceAtLeast(256))
                     val params = state.toParams()
-                    val lut = CubeLut.parse(e.bakeCubeLut(params, 33))
+                    // SHAPER_SRGB is REQUIRED here, not optional: LutGpuPreview's shader
+                    // always indexes through the sRGB transfer, so a LUT baked on the linear
+                    // lattice would be sampled at the wrong cell entirely — mid-grey 0.18
+                    // looking up at 0.46, i.e. overexposed and flat. The only unshaped bake
+                    // is the user-facing .cube export, which no shader consumes.
+                    val lut = CubeLut.parse(
+                        e.bakeCubeLut(params, 33, SpektraEngine.SHAPER_SRGB)
+                    )
                     // The bake emits the pointwise transform at UNITY gain (a 3D LUT
                     // cannot carry auto-exposure), so meter the SAME proxy through the
                     // engine's own metering and hand the gain to the shader. Without it
@@ -1528,7 +1535,14 @@ class MainActivity : ComponentActivity() {
                                     scope.launch {
                                         val r = runCatching {
                                             withContext(Dispatchers.Default) {
-                                                val cube = e.bakeCubeLut(state.toParams(), size)
+                                                // UNSHAPED, deliberately: this file goes to
+                                                // other software, and a .cube carries no
+                                                // shaper metadata — it must stay in the
+                                                // linear domain it advertises.
+                                                val cube = e.bakeCubeLut(
+                                                    state.toParams(), size,
+                                                    SpektraEngine.SHAPER_NONE,
+                                                )
                                                 if (clf) {
                                                     val lut = CubeLut.parse(cube) ?: error("baked LUT could not be parsed")
                                                     val film = StockCatalog.displayName(ctx, state.filmProfile)
