@@ -395,8 +395,8 @@ private class CameraLutRenderer(
                 // Crop AFTER the rotation, so it acts in the buffer's own axes no matter
                 // how the quad was turned, and BEFORE uTexMatrix, which maps into the
                 // texture's actual region.
-                vec2 c = (r - 0.5) * uCrop + 0.5;
-                vUv = (uTexMatrix * vec4(c, 0.0, 1.0)).xy;
+                vec2 cropped = (r - 0.5) * uCrop + 0.5;
+                vUv = (uTexMatrix * vec4(cropped, 0.0, 1.0)).xy;
                 gl_Position = vec4((q * 2.0 - 1.0) * uScale, 0.0, 1.0);
             }
         """
