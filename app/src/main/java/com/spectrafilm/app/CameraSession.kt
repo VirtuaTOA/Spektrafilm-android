@@ -250,6 +250,16 @@ class CameraSession(
     @Volatile private var captureOrientation = android.media.ExifInterface.ORIENTATION_NORMAL
     @Volatile private var sessionSensorOrientation = 90
 
+    /**
+     * Bumped on every open and close. Camera2's callbacks are asynchronous, so an open
+     * started before a close can still deliver onOpened afterwards — and configuring a
+     * device that has since been closed throws "CameraDevice was already closed". Each
+     * attempt captures the generation it belongs to and abandons itself if it has been
+     * superseded, which is what makes rapid stop/start (backgrounding, lens switching)
+     * safe rather than racy.
+     */
+    @Volatile private var generation = 0
+
     // Latest luma plane, kept up to date by the ImageReader callback. The viewfinder
     // itself renders from the GL external texture; this SECOND, tiny output exists only
     // so the exposure can be metered on the CPU — SpektraEngine.meterExposureEv needs a
@@ -283,6 +293,7 @@ class CameraSession(
     fun open(lens: LensOption, surface: Surface, previewSize: Size) {
         if (!CameraInventory.hasPermission(ctx)) { onError("camera permission not granted"); return }
         close()
+        val gen = generation
         val t = HandlerThread("spk-camera").apply { start() }
         thread = t
         val h = Handler(t.looper)
@@ -291,8 +302,9 @@ class CameraSession(
         runCatching {
             mgr.openCamera(lens.logicalId, object : CameraDevice.StateCallback() {
                 override fun onOpened(camera: CameraDevice) {
+                    if (gen != generation) { camera.close(); return }
                     device = camera
-                    configure(camera, lens, surface, h)
+                    configure(camera, lens, surface, h, gen = gen)
                 }
                 override fun onDisconnected(camera: CameraDevice) { camera.close(); device = null }
                 override fun onError(camera: CameraDevice, error: Int) {
@@ -319,7 +331,9 @@ class CameraSession(
         surface: Surface,
         h: Handler,
         stage: Int = 0,
+        gen: Int,
     ) {
+        if (gen != generation) return
         val allowRaw = stage <= 1
         val allowWide = stage != 1
         // Re-entrant: a failed configuration retries without the RAW stream, so any readers
@@ -378,6 +392,7 @@ class CameraSession(
         previewIsDisplayP3 = wideGamut
         val cb = object : CameraCaptureSession.StateCallback() {
             override fun onConfigured(s: CameraCaptureSession) {
+                if (gen != generation) { runCatching { s.close() }; return }
                 session = s
                 val b = camera.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW).apply {
                     addTarget(surface)
@@ -395,14 +410,15 @@ class CameraSession(
                 // lens (notably the LIMITED ones, and any physical-camera session). Drop
                 // it and retry rather than leaving the user with a dead viewfinder —
                 // capture is then unavailable for that lens, which canCapture reports.
+                if (gen != generation) return
                 when {
                     stage == 0 -> {
                         Diag.w("camera: session failed (RAW+P3); retrying RAW without P3")
-                        h.post { configure(camera, lens, surface, h, stage = 1) }
+                        h.post { configure(camera, lens, surface, h, stage = 1, gen = gen) }
                     }
                     stage == 1 -> {
                         Diag.w("camera: session failed (RAW); retrying preview-only")
-                        h.post { configure(camera, lens, surface, h, stage = 2) }
+                        h.post { configure(camera, lens, surface, h, stage = 2, gen = gen) }
                     }
                     else -> onError("capture session configuration failed")
                 }
@@ -698,6 +714,8 @@ class CameraSession(
     }
 
     fun close() {
+        // Invalidate anything already in flight before tearing down.
+        generation++
         runCatching { session?.stopRepeating() }
         runCatching { session?.close() }
         runCatching { device?.close() }

@@ -291,11 +291,22 @@ private fun CameraScreenSupported() {
     // matrix if it really was, so this is read back rather than assumed.
     var wideGamut by remember { mutableStateOf(false) }
     DisposableEffect(lifecycleOwner, surface, lens) {
+        // Only REopen what a stop actually closed. Without the flag this fires alongside
+        // the LaunchedEffect below on first entry, opening the camera twice and racing the
+        // two attempts against each other.
+        var closedByStop = false
         val obs = androidx.lifecycle.LifecycleEventObserver { _, event ->
             when (event) {
-                androidx.lifecycle.Lifecycle.Event.ON_STOP -> session.close()
-                androidx.lifecycle.Lifecycle.Event.ON_START ->
-                    surface?.let { session.open(lens, it, previewSize) }
+                androidx.lifecycle.Lifecycle.Event.ON_STOP -> {
+                    closedByStop = true
+                    session.close()
+                }
+                androidx.lifecycle.Lifecycle.Event.ON_START -> {
+                    if (closedByStop) {
+                        closedByStop = false
+                        surface?.let { session.open(lens, it, previewSize) }
+                    }
+                }
                 else -> Unit
             }
         }
