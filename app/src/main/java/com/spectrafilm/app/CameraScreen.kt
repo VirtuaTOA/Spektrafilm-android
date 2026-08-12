@@ -109,8 +109,29 @@ internal const val FILM_ASPECT = 3f / 2f
 
 /** Narrowest the landscape control panel may become. The viewfinder takes a full-height 3:2
  *  frame and the panel takes the rest, so this is the backstop that keeps the controls usable
- *  on a screen too wide (or too short) for both to fit at full size. */
-private val LANDSCAPE_PANEL_MIN = 240.dp
+ *  on a screen too wide (or too short) for both to fit at full size.
+ *
+ *  A BACKSTOP, not the usual outcome: with the bars hidden in landscape the frame is
+ *  height-limited and the panel gets whatever is left (~211dp here), comfortably above this. */
+private val LANDSCAPE_PANEL_MIN = 200.dp
+
+/**
+ * Breathing room between the frame's edge and whatever is beyond it — the screen edge in
+ * portrait, the top and bottom edges in landscape. Applied to the viewfinder box in BOTH
+ * orientations, so the frame keeps its 3:2 shape and simply sits a little smaller inside.
+ *
+ * The frame filled its available space exactly in both layouts, which put its edge hard against
+ * the screen and read as cramped.
+ */
+private val FRAME_MARGIN = 10.dp
+
+/** Inset of the AE/AF readout from the frame's top-right corner. Matches [FRAME_MARGIN], so the
+ *  readout sits the same distance inside the frame as the frame sits from the screen edge. */
+private val TOGGLE_INSET = 10.dp
+
+/** Shutter button diameter. Shared, because the portrait layout centres NEGATIVE/SLIDE in the
+ *  gap between the shutter's edge and the screen edge and needs its radius to find that edge. */
+private val SHUTTER_DIAMETER = 70.dp
 
 /**
  * Left inset for the whole landscape layout, so the frame is not flush against the screen edge.
@@ -119,12 +140,14 @@ private val LANDSCAPE_PANEL_MIN = 240.dp
  * one to the lens row that starts the control panel. The panel keeps its content centred in
  * whatever width is left, so with screen width W, frame width F and lens-row width L, the right
  * gap is (W - P - F)/2 - L/2. Setting that equal to P gives P = (W - F - L)/3, which measured
- * off the device (W=2340, F=1404, L~460 px at 480dpi) lands near 58dp.
+ * off the device lands near 29dp NOW THAT THE BARS ARE HIDDEN: the balance depends on the frame
+ * width, and reclaiming the bars grew the frame from 444dp to 540dp, which left less room either
+ * side to share out. At the old 58dp the frame would hit the panel cap and go back to being
+ * width-limited — i.e. the black bars would return — so this is no longer purely cosmetic.
  *
- * Purely cosmetic, and it does NOT shrink the frame — the frame is sized from the height. Raise
- * it to push the frame further right, lower it to move it back toward the edge.
+ * W=780dp, F=540dp, L~153dp -> P = (780 - 540 - 153)/3 = 29dp.
  */
-private val LANDSCAPE_FRAME_START = 58.dp
+private val LANDSCAPE_FRAME_START = 29.dp
 
 @Composable
 fun CameraScreen() {
@@ -285,6 +308,31 @@ private fun CameraScreenSupported() {
             if (previous != null) window.navigationBarColor = previous
             if (hadLightIcons != null) controller?.isAppearanceLightNavigationBars = hadLightIcons
         }
+    }
+
+    // LANDSCAPE GOES IMMERSIVE. The frame is height-limited there, so every dp of vertical
+    // inset comes straight off it — and because the bars have to be cleared EVENLY to keep the
+    // frame centred, the larger of the two is paid at both edges, roughly 64dp in total. Hiding
+    // them returns all of it, and full-screen is what a camera normally does when turned
+    // sideways. The bars stay available on a swipe.
+    //
+    // PORTRAIT deliberately keeps its bars: the frame is not height-limited there, so hiding
+    // them would buy no size, and it would undo the downward shift that stops the top corners
+    // being clipped by the status bar.
+    DisposableEffect(window, landscape) {
+        val c = window?.let {
+            androidx.core.view.WindowCompat.getInsetsController(it, it.decorView)
+        }
+        if (landscape) {
+            c?.systemBarsBehavior = androidx.core.view.WindowInsetsControllerCompat
+                .BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+            c?.hide(androidx.core.view.WindowInsetsCompat.Type.systemBars())
+        } else {
+            c?.show(androidx.core.view.WindowInsetsCompat.Type.systemBars())
+        }
+        // Always restore on the way out — leaving the launcher or the editor without its
+        // status bar would look like the app had broken the system UI.
+        onDispose { c?.show(androidx.core.view.WindowInsetsCompat.Type.systemBars()) }
     }
 
     val rotation = remember(lens) {
@@ -507,8 +555,7 @@ private fun CameraScreenSupported() {
             onPick = { i -> scope.launch { listState.animateScrollToItem(i) } },
         )
 
-        ProcessToggle(slideMode = slideMode, onToggle = { slideMode = !slideMode })
-
+        val shutter: @Composable () -> Unit = {
         ShutterButton(
             enabled = canCapture && !capturing,
             onClick = {
@@ -548,6 +595,35 @@ private fun CameraScreenSupported() {
                 }
             },
         )
+        }
+
+        // PORTRAIT puts NEGATIVE/SLIDE BESIDE the shutter rather than on its own row. That row
+        // cost the controls column ~30dp of height, and since the viewfinder takes whatever the
+        // column leaves, it came straight out of the frame — pushing its top edge up under the
+        // status bar, where the rounded corners were being clipped.
+        //
+        // LANDSCAPE keeps them stacked: that panel is only ~254dp wide, so beside a 70dp
+        // shutter the toggle would have ~92dp to live in and would be cut off.
+        if (landscape) {
+            ProcessToggle(slideMode = slideMode, onToggle = { slideMode = !slideMode })
+            shutter()
+        } else {
+            Box(Modifier.fillMaxWidth()) {
+                Box(Modifier.align(Alignment.Center)) { shutter() }
+                // Taking the right HALF and insetting it by the shutter's radius makes this
+                // region exactly [shutter's right edge .. screen edge]. Centring the toggle in
+                // it makes the two gaps equal BY CONSTRUCTION, so it stays correct on any
+                // screen width instead of relying on a padding tuned to this phone.
+                Box(
+                    Modifier.align(Alignment.CenterEnd)
+                        .fillMaxWidth(0.5f)
+                        .padding(start = SHUTTER_DIAMETER / 2),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    ProcessToggle(slideMode = slideMode, onToggle = { slideMode = !slideMode })
+                }
+            }
+        }
     }
 
     val viewfinder: @Composable () -> Unit = {
@@ -566,6 +642,14 @@ private fun CameraScreenSupported() {
                 onSurfaceReady = { s -> surface = s },
                 onUnavailable = { error = "GPU viewfinder unavailable" },
             )
+            // INSIDE the frame, not over the layout. Both orientations size the viewfinder box
+            // to the 3:2 shape, so a TopEnd alignment here lands in the frame's own top-right
+            // corner either way — one placement and one inset, consistent by construction.
+            // Portrait used to overlay the SCREEN's top-right (which sat above the frame, hard
+            // against the status bar) and landscape stacked these at the top of the side panel:
+            // two placements that agreed on nothing. Declared BEFORE the flash overlay so a
+            // capture blacks the readout out along with the image.
+            Box(Modifier.align(Alignment.TopEnd).padding(TOGGLE_INSET)) { toggles() }
             if (flash.value > 0f) {
                 Box(
                     Modifier.fillMaxSize()
@@ -613,7 +697,9 @@ private fun CameraScreenSupported() {
                 // and there the bars come back rather than the buttons becoming unusable.
                 val frameWidth = minOf(maxHeight * FILM_ASPECT, maxWidth - LANDSCAPE_PANEL_MIN)
                 Row(Modifier.fillMaxSize()) {
-                    Box(Modifier.width(frameWidth).fillMaxHeight()) { viewfinder() }
+                    Box(
+                        Modifier.width(frameWidth).fillMaxHeight().padding(FRAME_MARGIN),
+                    ) { viewfinder() }
                     Column(
                         Modifier.weight(1f).fillMaxHeight()
                             .background(Color.Black)
@@ -621,7 +707,6 @@ private fun CameraScreenSupported() {
                         horizontalAlignment = Alignment.CenterHorizontally,
                         verticalArrangement = Arrangement.spacedBy(10.dp, Alignment.CenterVertically),
                     ) {
-                        toggles()
                         controls()
                     }
                 }
@@ -638,8 +723,13 @@ private fun CameraScreenSupported() {
             // it letterboxes within that — so what is visible is the whole frame. Landscape
             // already did this with a Row + fixed side panel, which is why it never showed
             // the fault.
-            Column(Modifier.fillMaxSize()) {
-                Box(Modifier.weight(1f).fillMaxWidth()) { viewfinder() }
+            // statusBarsPadding: without it the frame's top edge ran under the status bar and
+            // its rounded corners were clipped by the icons. Everything shifts down by the bar's
+            // height, which the reclaimed NEGATIVE/SLIDE row more than pays for.
+            Column(Modifier.fillMaxSize().statusBarsPadding()) {
+                Box(
+                    Modifier.weight(1f).fillMaxWidth().padding(FRAME_MARGIN),
+                ) { viewfinder() }
                 Column(
                     Modifier.fillMaxWidth()
                         .background(Color.Black)
@@ -650,11 +740,6 @@ private fun CameraScreenSupported() {
                     content = controls,
                 )
             }
-            // Stays an overlay: it sits in the letterbox bar above the image, not over it.
-            Box(
-                Modifier.align(Alignment.TopEnd).statusBarsPadding()
-                    .padding(top = 6.dp, end = 16.dp),
-            ) { toggles() }
         }
 
         // Outside the if/else, so ONE placement serves both orientations — and outside both
@@ -835,6 +920,8 @@ private fun TwoToneToggle(
         },
         fontSize = 10.sp,
         letterSpacing = 0.5.sp,
+        maxLines = 1,
+        softWrap = false,
         modifier = Modifier
             .clip(RoundedCornerShape(12.dp))
             .clickable(onClick = onClick)
@@ -899,7 +986,7 @@ private fun LensChip(label: String, selected: Boolean, onClick: () -> Unit) {
 private fun ShutterButton(enabled: Boolean, onClick: () -> Unit) {
     val tint = if (enabled) Color.White else UNSELECTED
     Canvas(
-        Modifier.size(70.dp).clip(RoundedCornerShape(35.dp))
+        Modifier.size(SHUTTER_DIAMETER).clip(RoundedCornerShape(SHUTTER_DIAMETER / 2))
             .clickable(enabled = enabled, onClick = onClick)
     ) {
         val r = size.minDimension / 2f

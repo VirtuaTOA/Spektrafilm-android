@@ -306,6 +306,8 @@ private class CameraLutRenderer(
         // Letterbox to the SCENE's on-screen shape, supplied by the caller from the
         // sensor-vs-display geometry — never inferred from uvRotation (see the field note).
         val imgA = displayAspect
+        // The frame's on-screen shape, so the shader's rounded corners stay circular.
+        GLES30.glUniform1f(GLES30.glGetUniformLocation(program, "uFrameAspect"), imgA)
         var sx = 1f
         var sy = 1f
         if (viewW > 0 && viewH > 0) {
@@ -385,11 +387,16 @@ private class CameraLutRenderer(
             uniform float uRotation;
             uniform vec2 uCrop;
             out vec2 vUv;
+            // The quad's OWN 0..1 coordinates, before crop and rotation — i.e. position within
+            // the displayed frame. vUv cannot serve: it has been cropped, rotated and passed
+            // through uTexMatrix, so it no longer says where a pixel sits in the frame.
+            out vec2 vFrame;
 
             void main() {
                 float x = float(gl_VertexID & 1);
                 float y = float((gl_VertexID >> 1) & 1);
                 vec2 q = vec2(x, y);
+                vFrame = q;
                 // Crop FIRST, in the quad's own axes — which are the SCREEN's axes. It has
                 // to happen before any rotation: this driver already rotates via uTexMatrix,
                 // so cropping downstream of that trimmed the wrong axis and squashed the
@@ -409,6 +416,8 @@ private class CameraLutRenderer(
             precision highp sampler3D;
             precision highp samplerExternalOES;
             in vec2 vUv;
+            in vec2 vFrame;
+            uniform float uFrameAspect;
             uniform samplerExternalOES uCam;
             uniform sampler3D uLut;
             uniform int uUseLut;
@@ -454,9 +463,40 @@ private class CameraLutRenderer(
                            1.055 * pow(max(c, 0.0), vec3(1.0 / 2.4)) - 0.055,
                            step(vec3(0.0031308), c));
             }
+            // --- ANALOG FRAME ---
+            // An optical finder is glass in a metal surround: the aperture has radiused
+            // corners, and the image does not stop at a hard pixel boundary — it falls off
+            // into the surround over a visible distance. A rectangle of live video with four
+            // sharp 90-degree corners is the single most "digital" thing about the viewfinder,
+            // so both are drawn here, per-pixel in the same pass rather than composited on
+            // top, which keeps the falloff smooth instead of stepping over a UI layer.
+            //
+            // Radius and softness are fractions of the frame's SHORT side, so they read the
+            // same in portrait and landscape. Tune them here.
+            const float kCornerRadius = 0.045;
+            const float kEdgeSoftness = 0.009;
+
+            float sdRoundedBox(vec2 p, vec2 b, float r) {
+                vec2 q = abs(p) - b + r;
+                return min(max(q.x, q.y), 0.0) + length(max(q, 0.0)) - r;
+            }
+
+            // 1 well inside the frame, falling to 0 at its edge.
+            float frameMask() {
+                // Scale by the aspect so the corners come out CIRCULAR. Working in raw 0..1
+                // quad space would stretch them into ellipses on a 3:2 frame.
+                vec2 axes = vec2(uFrameAspect, 1.0);
+                float shortSide = min(uFrameAspect, 1.0);
+                vec2 p = (vFrame - 0.5) * axes;
+                float sd = sdRoundedBox(p, axes * 0.5, kCornerRadius * shortSide);
+                // Fade INWARD from the boundary, so the image bleeds into the surround
+                // rather than the surround cutting into the image.
+                return 1.0 - smoothstep(-kEdgeSoftness * shortSide, 0.0, sd);
+            }
+
             void main() {
                 vec3 cam = texture(uCam, vUv).rgb;
-                if (uUseLut == 0) { fragColor = vec4(cam, 1.0); return; }
+                if (uUseLut == 0) { fragColor = vec4(cam * frameMask(), 1.0); return; }
                 // The stream is 8-bit and SCENE-LINEAR, which spends very few code values
                 // in the shadows, so gradients arrive already quantised into visible bands
                 // — and uExposureGain multiplies those steps. A +/- half-LSB offset
@@ -473,7 +513,7 @@ private class CameraLutRenderer(
                 // pure light than existed and renders it accordingly.
                 vec3 scene = toProPhoto(cam + d);
                 vec3 lin = shaperEncode(clamp(scene * uExposureGain, 0.0, 1.0));
-                fragColor = vec4(texture(uLut, vec3(lin.b, lin.g, lin.r)).rgb, 1.0);
+                fragColor = vec4(texture(uLut, vec3(lin.b, lin.g, lin.r)).rgb * frameMask(), 1.0);
             }
         """
     }
