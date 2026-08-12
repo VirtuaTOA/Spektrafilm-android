@@ -56,6 +56,7 @@ import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.LocalTextStyle
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -76,7 +77,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Shadow
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
@@ -922,6 +925,19 @@ private fun TwoToneToggle(
         letterSpacing = 0.5.sp,
         maxLines = 1,
         softWrap = false,
+        // A dark halo so the readout stays legible over a bright scene — it now sits INSIDE
+        // the frame, over live image rather than over black chrome, and white-on-white sky
+        // was unreadable. Zero offset with a small blur rings the glyphs evenly, which reads
+        // as an outline; a real stroked outline would need the text drawn twice and would
+        // fight the per-span colours this toggle uses. Alpha well under 1 keeps it from
+        // looking like a drop shadow.
+        style = LocalTextStyle.current.copy(
+            shadow = Shadow(
+                color = Color.Black.copy(alpha = 0.55f),
+                offset = Offset.Zero,
+                blurRadius = 3.5f,
+            ),
+        ),
         modifier = Modifier
             .clip(RoundedCornerShape(12.dp))
             .clickable(onClick = onClick)

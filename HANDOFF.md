@@ -25,24 +25,53 @@ film-stock preview → RAW capture → background processing → JPEG in `Pictur
 - **Presets**: one neutral preset per stock (20), saturation 0, scanner white/black correction on.
 - **Version still 0.8.0 / versionCode 10** — bump before any release.
 
-### Open issues — both were attempted, the attempt failed and was reverted
+### Open issue — ONE remains
 
 1. **Tungsten stocks preview blue in the viewfinder.** Cause confirmed by inspection:
    `FilmStockBalance` / `CreativeWhiteBalance` are **not `SpektraParams` fields** — they are Kotlin
    transforms applied to pixels *before* the engine. `LutBakery` bakes from params only, so the bake
    cannot see them (0 hits for `FilmStockBalance` in `LutBakery.kt`). **The camera capture path does
-   not apply them either** — only the editor does (`MainActivity.kt:794`). So an in-app photo is
+   not apply them either** — only the editor does (`MainActivity.kt`). So an in-app photo is
    consistently wrong in both viewfinder and export; opening that same file in the edit page
    corrects it.
-2. **Lens focal lengths ignore the 3:2 crop.** `equivalentFocal` (`CameraSession.kt:153`) uses the
-   full active-array diagonal, but the app crops to 3:2, so the shown equivalents read wider than
-   what is actually delivered.
 
-**A failed attempt at both is preserved on branch `wip/reverted-wb-focal`** (`9a46dc1`, `70e20dd`).
+**A failed attempt is preserved on branch `wip/reverted-wb-focal`** (`9a46dc1`, `70e20dd`).
 **Do not simply re-apply it.** It caused (a) apparent overexposure on *every* stock — cause never
 identified, (b) an orange flash while dragging onto a tungsten stock, (c) completely blue exports.
 The WB matrix was verified to be genuine identity for 18 of 20 stocks, so the overexposure was
 **not** the WB matrix. Diagnose before retrying.
+
+### Restore points
+
+`known-good/*` branches mark states confirmed working ON DEVICE by the user, newest last. Recover
+with `git reset --hard known-good/<name>`.
+
+- `known-good/viewfinder-crop-fixed` — portrait finder framing what the file actually contains
+- `known-good/landscape-and-indicator` — landscape frame sizing + the overlay render indicator
+- `known-good/analog-viewfinder` — rounded/soft frame edge, immersive landscape, AE/AF readout
+
+### Fixed on 2026-08-12 (was open, now closed)
+
+- **Lens focal lengths ignored the 3:2 crop.** `equivalentFocal` used the full active-array
+  diagonal while `cropToFilmAspect` trims every saved frame to 3:2, so the labels advertised a
+  wider lens than the photograph delivers. It now mirrors the crop before taking the diagonal
+  (~4% longer on a 4:3 sensor: 14/23/66 became 14/24/69). `FILM_ASPECT` is shared between the crop
+  and the focal maths so they cannot drift; `FULL_FRAME_DIAGONAL_MM` names the 43.2666 constant.
+  **Nothing is device-specific** — every input comes from `CameraCharacteristics` per lens, and a
+  device that omits `SENSOR_INFO_PHYSICAL_SIZE` gets the raw focal length back rather than a
+  confidently wrong number.
+- **The viewfinder appeared to crop tighter than the export.** Not a camera fault and not the 3:2
+  maths, which agreed exactly on both paths (portrait: shader crops X by 0.889, `cropToFilmAspect`
+  crops width to h/1.5 — the same 0.889). The portrait layout drew the viewfinder `fillMaxSize()`
+  with the control panel painted OVER its lower part, so the GL view letterboxed a correct frame
+  into the whole screen and the opaque panel hid its bottom fifth. Confirmed from a screenshot: the
+  black bar above the image measured ~360px, exactly the letterbox offset for fitting 3:2 into
+  2340px — only possible if the GL view spans the full screen. Now a `Column`, so the frame gets
+  only the space that is actually free.
+  - **Two wrong fixes preceded it**, both shipped on plausible mechanism rather than measurement,
+    and both made things worse on device: disabling EIS + distortion correction (blurred the
+    preview and shifted colour), and re-submitting the repeating request. **Read the layout before
+    blaming the ISP.**
 
 ### Findings from 2026-08-12 (expensive to rediscover)
 
@@ -82,9 +111,36 @@ The WB matrix was verified to be genuine identity for 18 of 20 stocks, so the ov
   `RAW_SENSOR` output. Without RAW the viewfinder still works but `canCapture` is false and the
   shutter is disabled — graceful, no crash.
 
+### Viewfinder UI (2026-08-12) — the geometry is derived, not tuned
+
+Changing any ONE of these constants can move the others; they are not independent knobs.
+
+- **`FILM_ASPECT` (3:2)** is shared by the viewfinder frame, `cropToFilmAspect` and the
+  focal-length maths. A mismatch would describe a field of view the file does not have.
+- **Landscape hides the system bars.** The frame is height-limited there, so vertical inset comes
+  straight off it — and clearing the bars EVENLY (needed to keep the frame centred) pays the larger
+  one twice, ~64dp. Hidden: frame 444x296 → 540x360dp, panel 254 → 211dp. Portrait keeps its bars:
+  the frame is not height-limited there, and `statusBarsPadding` is what stops the top corners
+  being clipped.
+- **`LANDSCAPE_FRAME_START` = 29dp is NOT cosmetic.** It balances the gap to the screen edge
+  against the gap to the lens row: `P = (W - F - L)/3`. It depends on frame width, so it changed
+  from 58 → 29dp when hiding the bars grew the frame. Raise it too far and the frame hits
+  `LANDSCAPE_PANEL_MIN`, becomes width-limited, and the black bars return.
+- **`FRAME_MARGIN` (10dp)** insets the frame from the screen in both orientations;
+  **`TOGGLE_INSET`** matches it so the AE/AF readout sits as far inside the frame as the frame sits
+  from the screen. That readout lives INSIDE the viewfinder box, which both layouts size to the 3:2
+  shape — so one `TopEnd` alignment serves both orientations.
+- **The frame edge is drawn in the fragment shader**, not composited: a rounded-box SDF with an
+  inward falloff (`kCornerRadius` 0.045, `kEdgeSoftness` 0.009, both fractions of the SHORT side).
+  Corner maths runs in aspect-corrected space or the corners come out elliptical. Display-only.
+  **No vignette by design** — the finder must predict the exported file, and darkened corners would
+  read as a film effect that is not in the photo.
+- **The render indicator is an overlay.** As a row inside the controls column it resized the column
+  on every capture, and since the viewfinder takes the leftover space, the frame moved each shot.
+
 ### Next
 
-- Fix the two open issues above.
+- Fix the one open issue above.
 - Not built: in-app gallery (Phase 3); vintage EV-comp meter (designed in `docs/CAMERA_PLAN.md`
   §8c); focusing-screen overlay.
 - Deferred: diagnose the R8 failure; per-stock grain calibration; LibRaw lossy-DNG support (Samsung
