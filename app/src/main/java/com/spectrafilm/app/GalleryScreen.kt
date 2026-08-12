@@ -43,7 +43,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.systemBarsPadding
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
-import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.lazy.grid.itemsIndexed
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -80,7 +80,6 @@ import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlin.coroutines.cancellation.CancellationException
 import kotlin.math.roundToInt
@@ -140,13 +139,13 @@ fun GalleryButton(
     // withContext, and it fails the build. This is the same thing, spelled where lint can read it.
     var latest by remember { mutableStateOf<Gallery.Item?>(null) }
     LaunchedEffect(refreshKey) {
-        latest = withContext(Dispatchers.IO) { Gallery.latest(ctx) }
+        latest = withContext(Gallery.decodeDispatcher) { Gallery.latest(ctx) }
     }
     var bmp by remember { mutableStateOf<Bitmap?>(null) }
     LaunchedEffect(latest?.id) {
         val item = latest
         bmp = if (item == null) null
-        else withContext(Dispatchers.IO) { Gallery.thumbnail(ctx, item, THUMB_PX) }
+        else withContext(Gallery.decodeDispatcher) { Gallery.thumbnail(ctx, item, THUMB_PX) }
     }
     Box(
         Modifier.size(size)
@@ -159,8 +158,12 @@ fun GalleryButton(
     ) {
         val b = bmp
         if (b != null) {
+            // remember per bitmap: asImageBitmap() allocates a new wrapper every recomposition,
+            // and a scrolling grid recomposes cells constantly. The remaining frame spikes look
+            // like GC pauses, so the cheapest win is to stop making garbage.
+            val img = remember(b) { b.asImageBitmap() }
             Image(
-                bitmap = b.asImageBitmap(),
+                bitmap = img,
                 contentDescription = "Gallery",
                 modifier = Modifier.fillMaxSize(),
                 contentScale = ContentScale.Crop,
@@ -178,7 +181,14 @@ fun GalleryButton(
  * hardware gesture unwinds one level at a time the way a photo app should.
  */
 @Composable
-fun GalleryScreen(origin: Rect? = null, hero: Bitmap? = null, onBack: () -> Unit) {
+fun GalleryScreen(
+    origin: Rect? = null,
+    hero: Bitmap? = null,
+    /** Fires true once the gallery fully covers the viewfinder, and false again the moment a back
+     *  gesture starts to reveal it. Lets the camera stop its preview while it cannot be seen. */
+    onCovering: (Boolean) -> Unit = {},
+    onBack: () -> Unit,
+) {
     val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
     var items by remember { mutableStateOf<List<Gallery.Item>>(emptyList()) }
@@ -197,18 +207,27 @@ fun GalleryScreen(origin: Rect? = null, hero: Bitmap? = null, onBack: () -> Unit
     val photoBack = remember { Animatable(0f) }    // photo -> grid
     val galleryBack = remember { Animatable(0f) }  // grid  -> camera
 
+    // Tapping a thumbnail expands it, the same gesture the gallery itself opens with. Starts
+    // ALREADY FINISHED (1f / true) because the first photo arrives via the gallery's own hero —
+    // there is nothing left for this one to do until the user taps a cell.
+    val openGrow = remember { Animatable(1f) }
+    var photoArrived by remember { mutableStateOf(true) }
+    var photoOrigin by remember { mutableStateOf<Rect?>(null) }
+    var photoHero by remember { mutableStateOf<Bitmap?>(null) }
+
     LaunchedEffect(Unit) {
-        items = withContext(Dispatchers.IO) { Gallery.list(ctx) }
+        items = withContext(Gallery.decodeDispatcher) { Gallery.list(ctx) }
         loaded = true
     }
     LaunchedEffect(Unit) {
         grow.animateTo(1f, tween(OPEN_MS, easing = OPEN_EASING))
         arrived = true
+        onCovering(true)
     }
 
     var heroFull by remember { mutableStateOf<Bitmap?>(null) }
     LaunchedEffect(Unit) {
-        heroFull = withContext(Dispatchers.IO) {
+        heroFull = withContext(Gallery.decodeDispatcher) {
             Gallery.latest(ctx)?.let { Gallery.full(ctx, it) }
         }
     }
@@ -218,6 +237,9 @@ fun GalleryScreen(origin: Rect? = null, hero: Bitmap? = null, onBack: () -> Unit
     PredictiveBackHandler(enabled = true) { progress ->
         val inPhoto = openAt >= 0
         val bar = if (inPhoto) photoBack else galleryBack
+        // Leaving the gallery starts revealing the camera, so wake its preview NOW rather than
+        // when the slide finishes — otherwise it slides in as a frozen still.
+        if (!inPhoto) onCovering(false)
         try {
             progress.collect { event -> bar.snapTo(event.progress.coerceIn(0f, 1f)) }
             // Released past the threshold: finish the slide, then commit.
@@ -225,6 +247,9 @@ fun GalleryScreen(origin: Rect? = null, hero: Bitmap? = null, onBack: () -> Unit
             if (inPhoto) {
                 openAt = -1
                 bar.snapTo(0f)
+                // Re-arm: the next tap starts its own expand from 0.
+                openGrow.snapTo(1f)
+                photoArrived = true
             } else {
                 onBack()
             }
@@ -259,13 +284,32 @@ fun GalleryScreen(origin: Rect? = null, hero: Bitmap? = null, onBack: () -> Unit
                         // gone, photoBack is snapped back to 0 ready for next time — and reading it
                         // unconditionally then drove the grid's own alpha to 0, which is why
                         // completing the back gesture landed on a black screen.
-                        val reveal = if (photoOpen) photoBack.value else 1f
+                        // Two ways the grid can be on screen with a photo open: it is being
+                        // revealed by a back gesture (photoBack), or a tapped photo is still
+                        // expanding over it (openGrow). Take whichever says "more visible", so
+                        // the grid does not blink out the instant a cell is tapped.
+                        val reveal =
+                            if (photoOpen) maxOf(photoBack.value, 1f - openGrow.value) else 1f
                         // Slight parallax: the grid settles in from the right as the photo leaves.
                         translationX = size.width * 0.18f * (1f - reveal)
                         alpha = reveal
                     },
                 ) {
-                    GalleryGrid(items, loaded) { openAt = it }
+                    GalleryGrid(items, loaded) { idx, rect, bmp ->
+                        openAt = idx
+                        photoOrigin = rect
+                        photoHero = bmp
+                        // No bitmap yet (cell still decoding) => skip the expand rather than
+                        // animate an empty rectangle.
+                        if (bmp != null && rect.width > 0f) {
+                            photoArrived = false
+                            scope.launch {
+                                openGrow.snapTo(0f)
+                                openGrow.animateTo(1f, tween(OPEN_MS, easing = OPEN_EASING))
+                                photoArrived = true
+                            }
+                        }
+                    }
                 }
                 if (openAt >= 0 && openAt < items.size) {
                     Box(
@@ -273,54 +317,26 @@ fun GalleryScreen(origin: Rect? = null, hero: Bitmap? = null, onBack: () -> Unit
                             translationX = -size.width * photoBack.value
                         },
                     ) {
-                        GalleryViewer(items, openAt)
+                        val h = photoHero
+                        val from = photoOrigin
+                        if (!photoArrived && h != null && from != null) {
+                            // The tapped thumbnail, growing. Swapped for the viewer instantly on
+                            // arrival rather than crossfaded — they are the same photo at the same
+                            // geometry, and dissolving between two copies DIMS at the midpoint.
+                            ExpandingPhoto(h, from) { openGrow.value }
+                        } else {
+                            GalleryViewer(items, openAt)
+                        }
                     }
                 }
             }
 
-            // The expanding photo, only while opening.
+            // The expanding photo, only while opening — same composable the grid's tap-to-open
+            // uses, so both gestures are literally the same motion.
             val from = origin?.takeIf { it.width > 0f }
             val shownHero = heroFull ?: hero
             if (shownHero != null && from != null && showHero) {
-                Image(
-                    bitmap = shownHero.asImageBitmap(),
-                    contentDescription = null,
-                    contentScale = ContentScale.Crop,
-                    modifier = Modifier
-                        .layout { measurable, constraints ->
-                            val p = grow.value
-                            val fullW = constraints.maxWidth.toFloat()
-                            val fullH = constraints.maxHeight.toFloat()
-                            val ar = shownHero.width.toFloat() / shownHero.height.toFloat()
-                            val tw: Float
-                            val th: Float
-                            if (fullW / fullH > ar) {
-                                th = fullH; tw = th * ar
-                            } else {
-                                tw = fullW; th = tw / ar
-                            }
-                            val tl = (fullW - tw) / 2f
-                            val tt = (fullH - th) / 2f
-                            val w = from.width + (tw - from.width) * p
-                            val h = from.height + (th - from.height) * p
-                            val x = from.left + (tl - from.left) * p
-                            val y = from.top + (tt - from.top) * p
-                            val pl = measurable.measure(
-                                Constraints.fixed(
-                                    w.roundToInt().coerceAtLeast(1),
-                                    h.roundToInt().coerceAtLeast(1),
-                                ),
-                            )
-                            layout(constraints.maxWidth, constraints.maxHeight) {
-                                pl.place(x.roundToInt(), y.roundToInt())
-                            }
-                        }
-                        .graphicsLayer {
-                            val p = grow.value
-                            clip = true
-                            shape = RoundedCornerShape(6.dp.toPx() * (1f - p))
-                        },
-                )
+                ExpandingPhoto(shownHero, from) { grow.value }
             }
         }
     }
@@ -330,7 +346,7 @@ fun GalleryScreen(origin: Rect? = null, hero: Bitmap? = null, onBack: () -> Unit
 private fun GalleryGrid(
     items: List<Gallery.Item>,
     loaded: Boolean,
-    onOpen: (Int) -> Unit,
+    onOpen: (Int, Rect, Bitmap?) -> Unit,
 ) {
     if (loaded && items.isEmpty()) {
         Column(
@@ -361,31 +377,39 @@ private fun GalleryGrid(
         horizontalArrangement = Arrangement.spacedBy(2.dp),
         verticalArrangement = Arrangement.spacedBy(2.dp),
     ) {
-        items(items, key = { it.id }) { item ->
-            val idx = items.indexOf(item)
-            GalleryCell(item) { onOpen(idx) }
+        // itemsIndexed, NOT items + indexOf: indexOf is a linear scan comparing data-class
+        // equality, run per visible cell per composition. Over a 500-frame roll that is real work
+        // on the UI thread during a scroll.
+        itemsIndexed(items, key = { _, it -> it.id }) { idx, item ->
+            GalleryCell(item) { rect, bmp -> onOpen(idx, rect, bmp) }
         }
     }
 }
 
 @Composable
-private fun GalleryCell(item: Gallery.Item, onClick: () -> Unit) {
+private fun GalleryCell(item: Gallery.Item, onClick: (Rect, Bitmap?) -> Unit) {
     val ctx = LocalContext.current
+    var cellBounds by remember { mutableStateOf(Rect.Zero) }
     var bmp by remember(item.id) { mutableStateOf(Gallery.cachedThumbnail(item.id, THUMB_PX)) }
     LaunchedEffect(item.id) {
-        if (bmp == null) bmp = withContext(Dispatchers.IO) { Gallery.thumbnail(ctx, item, THUMB_PX) }
+        if (bmp == null) bmp = withContext(Gallery.decodeDispatcher) { Gallery.thumbnail(ctx, item, THUMB_PX) }
     }
     Box(
         // 3:2 cells, matching the frame the camera actually shoots, so the grid reads as
         // contact sheet rather than as a set of arbitrary crops.
         Modifier.fillMaxWidth().aspectRatio(FILM_ASPECT)
             .background(Color(0xFF141414))
-            .clickable(onClick = onClick),
+            .onGloballyPositioned { cellBounds = it.boundsInRoot() }
+            .clickable { onClick(cellBounds, bmp) },
     ) {
         val b = bmp
         if (b != null) {
+            // remember per bitmap: asImageBitmap() allocates a new wrapper every recomposition,
+            // and a scrolling grid recomposes cells constantly. The remaining frame spikes look
+            // like GC pauses, so the cheapest win is to stop making garbage.
+            val img = remember(b) { b.asImageBitmap() }
             Image(
-                bitmap = b.asImageBitmap(),
+                bitmap = img,
                 contentDescription = item.name,
                 modifier = Modifier.fillMaxSize(),
                 contentScale = ContentScale.Crop,
@@ -394,8 +418,68 @@ private fun GalleryCell(item: Gallery.Item, onClick: () -> Unit) {
     }
 }
 
+/**
+ * A photo growing out of [from] to fill the screen — the gallery's opening gesture, used BOTH for
+ * the expand out of the camera's preview button and for tapping a thumbnail in the grid.
+ *
+ * Two things make it read correctly and are easy to get wrong. It animates its OWN BOUNDS rather
+ * than scaling a full-screen layer down: a uniform scale of the screen produces a rectangle with
+ * the PHONE's aspect, not the square that was tapped. And it grows to the PHOTO'S FIT-BOX, not to
+ * the whole screen, because Crop into a 9:19.5 window would chop a 3:2 frame — landing on the
+ * fit-box makes the handover to the viewer invisible.
+ *
+ * [progress] is a lambda so it is read in the layout and draw phases only; reading it in
+ * composition would recompose this subtree on every frame.
+ */
+@Composable
+private fun ExpandingPhoto(bitmap: Bitmap, from: Rect, progress: () -> Float) {
+    val img = remember(bitmap) { bitmap.asImageBitmap() }
+    Image(
+        bitmap = img,
+        contentDescription = null,
+        // CROP throughout: it fills the source rect exactly as that thumbnail did, and the target
+        // shares the photo's aspect, where crop and fit are the same thing.
+        contentScale = ContentScale.Crop,
+        modifier = Modifier
+            .layout { measurable, constraints ->
+                val p = progress()
+                val fullW = constraints.maxWidth.toFloat()
+                val fullH = constraints.maxHeight.toFloat()
+                val ar = bitmap.width.toFloat() / bitmap.height.toFloat()
+                val tw: Float
+                val th: Float
+                if (fullW / fullH > ar) {
+                    th = fullH; tw = th * ar
+                } else {
+                    tw = fullW; th = tw / ar
+                }
+                val tl = (fullW - tw) / 2f
+                val tt = (fullH - th) / 2f
+                val w = from.width + (tw - from.width) * p
+                val h = from.height + (th - from.height) * p
+                val x = from.left + (tl - from.left) * p
+                val y = from.top + (tt - from.top) * p
+                val pl = measurable.measure(
+                    Constraints.fixed(
+                        w.roundToInt().coerceAtLeast(1),
+                        h.roundToInt().coerceAtLeast(1),
+                    ),
+                )
+                layout(constraints.maxWidth, constraints.maxHeight) {
+                    pl.place(x.roundToInt(), y.roundToInt())
+                }
+            }
+            .graphicsLayer {
+                val p = progress()
+                clip = true
+                shape = RoundedCornerShape(6.dp.toPx() * (1f - p))
+            },
+    )
+}
+
 @Composable
 private fun GalleryViewer(items: List<Gallery.Item>, startAt: Int) {
+    val ctx = LocalContext.current
     val pager = rememberPagerState(initialPage = startAt, pageCount = { items.size })
     var scale by remember { mutableFloatStateOf(1f) }
     var offset by remember { mutableStateOf(Offset.Zero) }
@@ -403,6 +487,18 @@ private fun GalleryViewer(items: List<Gallery.Item>, startAt: Int) {
 
     // Every frame opens fit-to-screen; the zoom belongs to the photo you are looking at.
     LaunchedEffect(pager.settledPage) { scale = 1f; offset = Offset.Zero }
+
+    // PRELOAD THE NEIGHBOURS at display resolution, so a swipe lands on a sharp frame instead of
+    // the 320px grid thumbnail while that page starts its own decode. Display-res is ~5 MB against
+    // ~41 MB for a full decode, and the cache is byte-budgeted, so warming both sides is cheap.
+    // Full resolution stays reserved for the settled page, where zoom actually needs the pixels.
+    LaunchedEffect(pager.currentPage, items) {
+        withContext(Gallery.decodeDispatcher) {
+            for (i in intArrayOf(pager.currentPage + 1, pager.currentPage - 1)) {
+                items.getOrNull(i)?.let { Gallery.display(ctx, it, DISPLAY_PX) }
+            }
+        }
+    }
 
     HorizontalPager(
         state = pager,
@@ -414,36 +510,34 @@ private fun GalleryViewer(items: List<Gallery.Item>, startAt: Int) {
         val item = items[page]
         val settled = pager.settledPage == page
 
-        // SEEDED FROM CACHE, synchronously. Starting these at null meant the viewer's first
-        // frame had no bitmap and drew black — and since it appears exactly as the expanding hero
-        // is removed, that black frame landed right at the end of the animation. For the photo
-        // the hero just finished expanding, cachedFull hits and the handover is seamless.
-        var thumb by remember(item.id) {
-            mutableStateOf(Gallery.cachedThumbnail(item.id, THUMB_PX))
-        }
-        LaunchedEffect(item.id) {
-            if (thumb == null) {
-                thumb = withContext(Dispatchers.IO) { Gallery.thumbnail(ctx, item, THUMB_PX) }
-            }
-        }
-        // Full resolution for the settled page only — holding full frames for the neighbours too
-        // would be ~150 MB of bitmaps mid-swipe.
-        // Seeded from whatever is already decoded, best first — the hero's screen-sized bitmap
-        // counts, so the handover has real pixels rather than falling back to a 320px thumbnail.
-        var full by remember(item.id) {
+        // ONE bitmap per page, upgraded in place through three tiers, never downgraded:
+        //   seed   whatever is already cached (best first) — synchronous, so the first frame is
+        //          never blank. The hero's screen-sized bitmap counts, which is what makes the
+        //          expand -> viewer handover seamless.
+        //   then   display resolution, if the preloader has not already put it there.
+        //   then   FULL resolution, but only once this page is the settled one, since that is the
+        //          only page where pinch-zoom can ask for the pixels. Holding full frames for the
+        //          neighbours too would be ~150 MB of bitmaps mid-swipe.
+        var shown by remember(item.id) {
             mutableStateOf(
-                Gallery.cachedFull(item.id) ?: Gallery.cachedDisplay(item.id, DISPLAY_PX),
+                Gallery.cachedFull(item.id)
+                    ?: Gallery.cachedDisplay(item.id, DISPLAY_PX)
+                    ?: Gallery.cachedThumbnail(item.id, THUMB_PX),
             )
         }
-        LaunchedEffect(item.id, settled) {
-            full = when {
-                !settled -> null
-                full != null -> full          // already have it; do not drop and re-decode
-                else -> withContext(Dispatchers.IO) { Gallery.full(ctx, item) }
+        LaunchedEffect(item.id) {
+            if (Gallery.cachedFull(item.id) == null &&
+                Gallery.cachedDisplay(item.id, DISPLAY_PX) == null
+            ) {
+                withContext(Gallery.decodeDispatcher) { Gallery.display(ctx, item, DISPLAY_PX) }
+                    ?.let { shown = it }
             }
         }
-
-        val shown = full ?: thumb
+        LaunchedEffect(item.id, settled) {
+            if (settled) {
+                withContext(Gallery.decodeDispatcher) { Gallery.full(ctx, item) }?.let { shown = it }
+            }
+        }
         Box(
             Modifier.fillMaxSize()
                 .pointerInput(item.id) {
@@ -492,8 +586,9 @@ private fun GalleryViewer(items: List<Gallery.Item>, startAt: Int) {
         ) {
             val b = shown
             if (b != null) {
+                val img = remember(b) { b.asImageBitmap() }
                 Image(
-                    bitmap = b.asImageBitmap(),
+                    bitmap = img,
                     contentDescription = item.name,
                     modifier = Modifier.fillMaxSize().graphicsLayer(
                         scaleX = scale,

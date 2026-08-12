@@ -161,6 +161,9 @@ fun CameraScreen(
      *  is animating that very thumbnail — leaving it in place showed the square sitting still
      *  while a copy of it flew away. */
     galleryOpen: Boolean = false,
+    /** True once the gallery has fully covered the viewfinder. The preview stops while it is:
+     *  invisible frames still cost power AND hold the display at 60Hz. */
+    previewCovered: Boolean = false,
     onOpenGallery: (androidx.compose.ui.geometry.Rect, android.graphics.Bitmap?) -> Unit =
         { _, _ -> },
 ) {
@@ -174,13 +177,14 @@ fun CameraScreen(
         )
         return
     }
-    CameraScreenSupported(galleryOpen, onOpenGallery)
+    CameraScreenSupported(galleryOpen, previewCovered, onOpenGallery)
 }
 
 @androidx.annotation.RequiresApi(Build.VERSION_CODES.P)
 @Composable
 private fun CameraScreenSupported(
     galleryOpen: Boolean,
+    previewCovered: Boolean,
     onOpenGallery: (androidx.compose.ui.geometry.Rect, android.graphics.Bitmap?) -> Unit,
 ) {
     val ctx = LocalContext.current
@@ -351,6 +355,12 @@ private fun CameraScreenSupported(
         onDispose { c?.show(androidx.core.view.WindowInsetsCompat.Type.systemBars()) }
     }
 
+    // Stop the stream while the gallery hides it; restart the moment it is uncovered. Cheap both
+    // ways — the session is never reconfigured, only its repeating request.
+    LaunchedEffect(previewCovered) {
+        if (previewCovered) session.pausePreview() else session.resumePreview()
+    }
+
     val rotation = remember(lens) {
         val sensor = CameraInventory.sensorOrientation(ctx, lens.logicalId)
         ((sensor - displayRotationDegrees(ctx)) + 360) % 360
@@ -503,9 +513,18 @@ private fun CameraScreenSupported(
         meterUnlocked("startup")
     }
 
-    LaunchedEffect(Unit) {
-        while (true) {
-            queued = CaptureQueue.pending(ctx)
+    // The queue depth poll. TWO fixes here, both measured rather than guessed:
+    //
+    //   OFF THE MAIN THREAD. CaptureQueue.pending stats a file, reads it whole and parses JSON —
+    //   and it is @Synchronized, so it can also block on the processing service's writer. Doing
+    //   that on the UI thread every 1.5s stalls whatever is drawing. Frame profiling put the
+    //   spikes squarely in Compose's frame callback, not in layout, draw or the GPU.
+    //
+    //   NOT WHILE COVERED. With the gallery over the top nothing displays this number, so the
+    //   poll was costing frames for a value nobody could see.
+    LaunchedEffect(previewCovered) {
+        while (!previewCovered) {
+            queued = withContext(Dispatchers.IO) { CaptureQueue.pending(ctx) }
             kotlinx.coroutines.delay(1500)
         }
     }
@@ -606,7 +625,9 @@ private fun CameraScreenSupported(
                             ctx,
                             CaptureJob(file.absolutePath, stock.id, System.currentTimeMillis()),
                         )
-                        queued = CaptureQueue.pending(ctx)
+                        scope.launch {
+                            queued = withContext(Dispatchers.IO) { CaptureQueue.pending(ctx) }
+                        }
                     }
                 }
             },

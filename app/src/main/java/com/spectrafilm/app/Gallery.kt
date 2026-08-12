@@ -27,8 +27,26 @@ import android.os.Build
 import android.provider.MediaStore
 import android.util.LruCache
 import android.util.Size
+import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 
 object Gallery {
+
+    /**
+     * The ONE dispatcher every gallery decode runs on, deliberately narrow.
+     *
+     * Dispatchers.IO allows up to 64 threads, and the grid launches a decode per cell — so a
+     * scroll fired twenty-odd concurrent JPEG decodes that saturated the CPU and left the UI
+     * thread fighting for a core. Measured on device: individual decodes were fine (9ms median)
+     * while the UI thread stalled on 63 frames with zero slow bitmap uploads, which is what
+     * starvation looks like rather than a slow decode.
+     *
+     * Two keeps the queue moving without monopolising the machine. Decoding slightly later is
+     * invisible; dropping scroll frames is not.
+     */
+    @OptIn(ExperimentalCoroutinesApi::class)
+    val decodeDispatcher: CoroutineDispatcher = Dispatchers.IO.limitedParallelism(2)
 
     /** One finished photo. [uri] is a content:// URI, usable directly by the viewer. */
     data class Item(
@@ -104,6 +122,17 @@ object Gallery {
         override fun sizeOf(key: String, value: Bitmap) = value.byteCount / 1024
     }
 
+    // SEPARATE cache for display-resolution frames, and this separation is the point. A display
+    // frame is ~5 MB against ~0.4 MB for a grid thumbnail, so sharing one budget let a couple of
+    // preloaded viewer frames evict HUNDREDS of thumbnails — and the grid then re-decoded them
+    // while scrolling, which is exactly what made scrolling choppy. Small by design: only the
+    // current viewer page and its two neighbours are ever wanted.
+    private val displayCache = object : LruCache<String, Bitmap>(
+        ((Runtime.getRuntime().maxMemory() / 1024) / 16).toInt().coerceAtLeast(24 * 1024),
+    ) {
+        override fun sizeOf(key: String, value: Bitmap) = value.byteCount / 1024
+    }
+
     /**
      * A decoded thumbnail at roughly [px] on its longest side, or null.
      *
@@ -114,13 +143,21 @@ object Gallery {
     fun thumbnail(ctx: Context, item: Item, px: Int): Bitmap? {
         val key = "${item.id}@$px"
         cache.get(key)?.let { return it }
+        // TEMPORARY INSTRUMENTATION: is loadThumbnail actually cheap here? It is only fast when
+        // the system already HAS a stored thumbnail; otherwise MediaProvider decodes the full
+        // 12 MP frame to make one, over Binder, per cell. Timing it settles that rather than
+        // guessing again.
+        val t0 = System.nanoTime()
         val bmp = runCatching {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                 ctx.contentResolver.loadThumbnail(item.uri, Size(px, px), null)
             } else {
                 decodeSampled(ctx, item.uri, px)
             }
-        }.getOrNull() ?: return null
+        }.getOrNull()
+        val ms = (System.nanoTime() - t0) / 1_000_000.0
+        Diag.i("gallery: thumb %.1fms (%s)".format(ms, if (bmp == null) "FAILED" else "ok"))
+        if (bmp == null) return null
         cache.put(key, bmp)
         return bmp
     }
@@ -195,14 +232,14 @@ object Gallery {
      * pinch-zoom genuinely needs the pixels.
      */
     fun display(ctx: Context, item: Item, px: Int): Bitmap? {
-        val key = "${'$'}{item.id}#d${'$'}px"
-        cache.get(key)?.let { return it }
+        val key = "${item.id}#d$px"
+        displayCache.get(key)?.let { return it }
         val b = runCatching { decodeSampled(ctx, item.uri, px) }.getOrNull() ?: return null
-        cache.put(key, b)
+        displayCache.put(key, b)
         return b
     }
 
-    fun cachedDisplay(id: Long, px: Int): Bitmap? = cache.get("${'$'}id#d${'$'}px")
+    fun cachedDisplay(id: Long, px: Int): Bitmap? = displayCache.get("$id#d$px")
 
     /**
      * Cached bitmaps WITHOUT decoding, for seeding a composable's initial state.
@@ -216,5 +253,8 @@ object Gallery {
     fun cachedThumbnail(id: Long, px: Int): Bitmap? = cache.get("$id@$px")
 
     /** Drop cached thumbnails — call when the list changes so a deleted item cannot linger. */
-    fun clearCache() = cache.evictAll()
+    fun clearCache() {
+        cache.evictAll()
+        displayCache.evictAll()
+    }
 }

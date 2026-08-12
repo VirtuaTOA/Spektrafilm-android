@@ -533,6 +533,33 @@ class CameraSession(
      * the locked gain would drift out of correctness. Pin both and the viewfinder's
      * exposure IS the capture's exposure. See docs/CAMERA_PLAN.md §5.
      */
+    /**
+     * Stop / restart the preview stream WITHOUT tearing the session down.
+     *
+     * WHY: Android chooses the display refresh rate from the layers on screen, and a camera
+     * preview posting buffers at 30fps pulls a 120Hz panel down to 60. While the gallery covers
+     * the viewfinder those frames are invisible anyway, so stopping the repeating request lets the
+     * gallery's own animations run at the panel's native rate — and saves the power of a live
+     * camera nobody can see.
+     *
+     * Deliberately NOT close/reopen: the session and device stay configured, so resuming is a
+     * single setRepeatingRequest rather than the several hundred milliseconds a reconfigure costs
+     * (which is exactly what made the viewfinder go black when the gallery was a separate Screen).
+     */
+    fun pausePreview() {
+        val s = session ?: return
+        runCatching { s.stopRepeating() }
+            .onFailure { Diag.w("camera: pausePreview failed: ${it.message}") }
+    }
+
+    fun resumePreview() {
+        val s = session ?: return
+        val b = request ?: return
+        val h = handler ?: return
+        runCatching { s.setRepeatingRequest(b.build(), null, h) }
+            .onFailure { Diag.w("camera: resumePreview failed: ${it.message}") }
+    }
+
     fun setAeLock(locked: Boolean) {
         aeLocked = locked
         val b = request ?: return

@@ -164,6 +164,10 @@ class MainActivity : ComponentActivity() {
         // camera device, so the viewfinder went black behind the transition. As an overlay the
         // camera composable is never touched: same instance, same live session, still drawing.
         var galleryOpen by remember { mutableStateOf(false) }
+        // True only while the gallery actually hides the viewfinder. The camera stops its preview
+        // then: invisible frames cost power, and a 30fps camera layer holds the whole display at
+        // 60Hz, which made every gallery animation feel half-rate on a 120Hz panel.
+        var cameraCovered by remember { mutableStateOf(false) }
 
         // Resume any capture queue left behind by a previous run. The process can be killed
         // under memory pressure mid-render — this pipeline allocates over a gigabyte at full
@@ -234,11 +238,15 @@ class MainActivity : ComponentActivity() {
                 )
                 // Full-bleed, no NavScaffold: a title bar over a viewfinder is dead space,
                 // and the system back gesture already returns home (BackHandler above).
-                Screen.CAMERA -> CameraScreen(galleryOpen = galleryOpen, onOpenGallery = { rect, bmp ->
+                Screen.CAMERA -> CameraScreen(
+                    galleryOpen = galleryOpen,
+                    previewCovered = cameraCovered,
+                    onOpenGallery = { rect, bmp ->
                     galleryOrigin = rect
                     galleryHero = bmp
                     galleryOpen = true
-                })
+                    },
+                )
                 Screen.DIAGNOSTICS -> NavScaffold("Diagnostics", onBack = { screen = Screen.SETTINGS }) {
                     DiagnosticsScreen()
                 }
@@ -264,7 +272,8 @@ class MainActivity : ComponentActivity() {
                 GalleryScreen(
                     origin = galleryOrigin,
                     hero = galleryHero,
-                    onBack = { galleryOpen = false },
+                    onCovering = { cameraCovered = it },
+                    onBack = { galleryOpen = false; cameraCovered = false },
                 )
             }
 
