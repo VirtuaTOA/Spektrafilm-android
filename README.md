@@ -1,7 +1,12 @@
 # Spektrafilm for Android
 
 Spectral film simulation on your phone — a native port of the
-[spektrafilm](https://github.com/andreavolpato/spektrafilm) engine, with a Jetpack Compose editor.
+[spektrafilm](https://github.com/andreavolpato/spektrafilm) engine, with a Jetpack Compose editor
+**and an in-app film camera**: shoot RAW with a live film-stock preview and get the developed
+frame back in your gallery.
+
+> This fork adds the camera to [thetechgeekko/Spektrafilm-android](https://github.com/thetechgeekko/Spektrafilm-android).
+> The engine, the editor and the science are that project's work (and Andrea Volpato's before it).
 
 *Film modeling powered by [spektrafilm](https://github.com/andreavolpato/spektrafilm). Dedicated to
 the [pixls.us](https://pixls.us) community.*
@@ -38,6 +43,25 @@ Lightroom.
 
 ## What you can do with it
 
+**Shoot on it.** A viewfinder that shows the film, not the sensor. Pick a stock, frame in the 35 mm
+3:2 shape the file will actually have, and the preview is your chosen emulsion rendered live —
+because the look is baked into a 3D LUT and applied on the GPU, so it runs at frame rate. The
+shutter writes a RAW DNG, which is then developed through the full simulation in the background
+while you keep shooting; finished frames land in `Pictures/Spektrafilm`.
+
+It captures RAW deliberately. The engine is radiometric — a pixel's value *is* an irradiance
+meeting the film's spectral sensitivity curves — so a JPEG that the phone has already tone-mapped,
+sharpened and saturated is a lie about how much light there was. The viewfinder disables the ISP's
+tone curve, sharpening and noise reduction for the same reason.
+
+Manual focus with a distance wheel, a meter/AE-lock that pins the sensor and engine exposure
+together, and every lens the phone has — including the telephoto, which Camera2 hides behind the
+logical camera and which most apps therefore cannot reach. Lens labels are true 35 mm equivalents,
+computed per device from its own sensor geometry.
+
+*Needs Android 9+ and a phone that exposes RAW through Camera2. Without RAW the viewfinder still
+works, but the shutter stays disabled — nothing crashes, it simply cannot capture.*
+
 **Choose a film and a paper.** 28 film and paper profiles — color negative, slide, motion-picture,
 print film, and RGB papers — listed by friendly name and grouped by category, each with its ISO,
 color balance, and era. The print path works for any film/paper pairing, not just preset
@@ -73,7 +97,12 @@ you reopen or export. The original RAW is never modified.
 ## Install
 
 Download the APK from the [Releases](../../releases/latest) page (or grab the build artifact from the
-latest green CI run), allow installs from unknown sources, and open it. Minimum Android 7.0 (API 24).
+latest green CI run), allow installs from unknown sources, and open it. Minimum Android 7.0 (API 24)
+for the editor; the in-app camera needs Android 9.0 (API 28).
+
+Builds are debug-signed with the `debug.keystore` committed here, so they update over each other
+cleanly. Release (R8-minified) builds are **not** currently usable — they render a working
+viewfinder but export black images, and the cause is still open.
 The native engine ships for arm64-v8a, armeabi-v7a, and x86_64.
 
 ## How it was made
