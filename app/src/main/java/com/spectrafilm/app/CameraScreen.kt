@@ -136,6 +136,9 @@ private val TOGGLE_INSET = 10.dp
  *  gap between the shutter's edge and the screen edge and needs its radius to find that edge. */
 private val SHUTTER_DIAMETER = 70.dp
 
+/** Gallery preview button. Small enough to read as a thumbnail rather than a second shutter. */
+private val GALLERY_BUTTON = 44.dp
+
 /**
  * Left inset for the whole landscape layout, so the frame is not flush against the screen edge.
  *
@@ -153,7 +156,14 @@ private val SHUTTER_DIAMETER = 70.dp
 private val LANDSCAPE_FRAME_START = 29.dp
 
 @Composable
-fun CameraScreen() {
+fun CameraScreen(
+    /** True while the gallery overlay is showing. The preview button hides, because the gallery
+     *  is animating that very thumbnail — leaving it in place showed the square sitting still
+     *  while a copy of it flew away. */
+    galleryOpen: Boolean = false,
+    onOpenGallery: (androidx.compose.ui.geometry.Rect, android.graphics.Bitmap?) -> Unit =
+        { _, _ -> },
+) {
     // Direct SDK_INT check, not CameraInventory.isSupported: lint's NewApi analysis follows
     // a literal Build.VERSION comparison but cannot see through a property.
     if (Build.VERSION.SDK_INT < Build.VERSION_CODES.P) {
@@ -164,12 +174,15 @@ fun CameraScreen() {
         )
         return
     }
-    CameraScreenSupported()
+    CameraScreenSupported(galleryOpen, onOpenGallery)
 }
 
 @androidx.annotation.RequiresApi(Build.VERSION_CODES.P)
 @Composable
-private fun CameraScreenSupported() {
+private fun CameraScreenSupported(
+    galleryOpen: Boolean,
+    onOpenGallery: (androidx.compose.ui.geometry.Rect, android.graphics.Bitmap?) -> Unit,
+) {
     val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
     val configuration = LocalConfiguration.current
@@ -609,10 +622,40 @@ private fun CameraScreenSupported() {
         // shutter the toggle would have ~92dp to live in and would be cut off.
         if (landscape) {
             ProcessToggle(slideMode = slideMode, onToggle = { slideMode = !slideMode })
-            shutter()
+            // The panel is narrow (~211dp), so the toggle stays stacked above — but the preview
+            // button still goes to the LEFT of the shutter, matching portrait.
+            Box(Modifier.fillMaxWidth()) {
+                Box(Modifier.align(Alignment.Center)) { shutter() }
+                Box(
+                    Modifier.align(Alignment.CenterStart).padding(start = 6.dp),
+                ) {
+                    if (!galleryOpen) GalleryButton(
+                        size = GALLERY_BUTTON,
+                        refreshKey = queued,
+                        onClick = onOpenGallery,
+                    )
+                }
+            }
         } else {
             Box(Modifier.fillMaxWidth()) {
                 Box(Modifier.align(Alignment.Center)) { shutter() }
+                // Mirror of the NEGATIVE/SLIDE placement below: the LEFT half, inset by the
+                // shutter's radius, so the preview button sits the same distance from the
+                // shutter as the toggle does and the row reads symmetrically.
+                Box(
+                    Modifier.align(Alignment.CenterStart)
+                        .fillMaxWidth(0.5f)
+                        .padding(end = SHUTTER_DIAMETER / 2),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    if (!galleryOpen) GalleryButton(
+                        size = GALLERY_BUTTON,
+                        // Re-query when the render queue drains: a frame that has just finished
+                        // developing should appear without leaving the screen.
+                        refreshKey = queued,
+                        onClick = onOpenGallery,
+                    )
+                }
                 // Taking the right HALF and insetting it by the shutter's radius makes this
                 // region exactly [shutter's right edge .. screen edge]. Centring the toggle in
                 // it makes the two gaps equal BY CONSTRUCTION, so it stays correct on any

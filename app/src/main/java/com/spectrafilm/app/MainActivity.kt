@@ -152,6 +152,18 @@ class MainActivity : ComponentActivity() {
         // HOME is the entry point: shoot and edit are genuinely different tasks and the
         // app cannot guess which one the user opened it for.
         var screen by rememberSaveable { mutableStateOf(Screen.HOME) }
+        // Where the camera's preview button was when it was tapped, so the gallery can expand
+        // out of it and collapse back into it. Not saveable: a Rect from a previous layout would
+        // be wrong after a rotation, and a null origin degrades to a plain fade.
+        var galleryOrigin by remember { mutableStateOf<androidx.compose.ui.geometry.Rect?>(null) }
+        // The bitmap the preview button was showing. Handed over on the tap rather than reloaded,
+        // so the expansion has something to draw on its very first frame.
+        var galleryHero by remember { mutableStateOf<android.graphics.Bitmap?>(null) }
+        // An OVERLAY, not a screen. Composing the gallery as its own Screen replaced the camera,
+        // and Compose disposed CameraScreen and built a fresh one — which had to reopen the
+        // camera device, so the viewfinder went black behind the transition. As an overlay the
+        // camera composable is never touched: same instance, same live session, still drawing.
+        var galleryOpen by remember { mutableStateOf(false) }
 
         // Resume any capture queue left behind by a previous run. The process can be killed
         // under memory pressure mid-render — this pipeline allocates over a gigabyte at full
@@ -222,7 +234,11 @@ class MainActivity : ComponentActivity() {
                 )
                 // Full-bleed, no NavScaffold: a title bar over a viewfinder is dead space,
                 // and the system back gesture already returns home (BackHandler above).
-                Screen.CAMERA -> CameraScreen()
+                Screen.CAMERA -> CameraScreen(galleryOpen = galleryOpen, onOpenGallery = { rect, bmp ->
+                    galleryOrigin = rect
+                    galleryHero = bmp
+                    galleryOpen = true
+                })
                 Screen.DIAGNOSTICS -> NavScaffold("Diagnostics", onBack = { screen = Screen.SETTINGS }) {
                     DiagnosticsScreen()
                 }
@@ -238,6 +254,17 @@ class MainActivity : ComponentActivity() {
                     profileId = curvesPrintId,
                     displayName = curvesPrintName,
                     onBack = { screen = Screen.EDITOR },
+                )
+            }
+
+            // GALLERY OVERLAY — drawn on top of the camera, which stays composed and live
+            // underneath. This is what lets the photo expand out of the running viewfinder
+            // instead of out of a black rectangle, in both directions.
+            if (galleryOpen) {
+                GalleryScreen(
+                    origin = galleryOrigin,
+                    hero = galleryHero,
+                    onBack = { galleryOpen = false },
                 )
             }
 
