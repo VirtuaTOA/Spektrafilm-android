@@ -33,6 +33,8 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
@@ -51,6 +53,26 @@ import androidx.compose.ui.unit.sp
 
 @Composable
 fun HomeScreen(onShoot: () -> Unit, onEdit: () -> Unit) {
+    // PORTRAIT-LOCKED. This screen is laid out with fixed vertical spacing — the title sits below
+    // a 168.dp spacer — which is over half the height of a landscape window, so turning the phone
+    // here pushed the buttons off the screen. Locking is the right call rather than making it
+    // responsive: it is a launcher with two buttons, shown for a second on the way to somewhere
+    // else, and neither destination wants a landscape home screen behind it.
+    //
+    // Restores the PREVIOUS setting on the way out, not a hardcoded default, so leaving for the
+    // camera or the editor hands orientation control straight back to them — the camera in
+    // particular is built to work both ways round.
+    val ctx = LocalContext.current
+    DisposableEffect(Unit) {
+        val activity = ctx as? android.app.Activity
+        val previous = activity?.requestedOrientation
+        activity?.requestedOrientation =
+            android.content.pm.ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+        onDispose {
+            activity?.requestedOrientation =
+                previous ?: android.content.pm.ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+        }
+    }
     Column(
         Modifier.fillMaxSize().padding(horizontal = 24.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
