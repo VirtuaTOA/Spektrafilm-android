@@ -1,6 +1,78 @@
 # Spektrafilm Android — Session Handoff
 
-## Current state (2026-07-02, branch `claude/exciting-hamilton-hya62`)
+## Current state (2026-08-10, fork `VirtuaTOA/Spektrafilm-android`, branch `main`)
+
+**This is Dan's fork**, created 2026-08-08 from `thetechgeekko/Spektrafilm-android`. Everything
+below the horizontal rule is **inherited upstream context** — still accurate about the engine, but it
+describes a pre-camera world and a Linux container. This fork runs on **macOS**, and its work is the
+**in-app camera**, not the gamut-compression roadmap.
+
+### What this fork adds: a camera
+
+27 commits (`8ccfbac`..`6759e1d`), pushed to `origin/main` 2026-08-10. Replaces a five-app workflow
+(Samsung Expert RAW → export DNG → import → process → Gallery) with: launcher → viewfinder with live
+film-stock preview → RAW capture → background processing → JPEG in `Pictures/Spektrafilm`.
+
+- **Viewfinder** (`CameraScreen.kt`, `CameraGlPreview.kt`, `CameraSession.kt`): Camera2 +
+  `setPhysicalCameraId` (the only route to the telephoto), GLES 3.0 `samplerExternalOES`, 3D LUT
+  applied in-shader. 3:2 film frame, manual focus, three lenses, meter/AE-lock.
+- **LUT bakery** (`LutBakery.kt`): 17³ lattice on an **sRGB-shaped** axis, LRU-cached per look.
+  `ColorGrade` is folded in; spatial/stochastic effects cannot be and are forced off.
+- **Capture** (`CaptureProcessing.kt`): RAW DNG via `DngCreator` → disk-backed queue → foreground
+  service (Android freezes cached processes) → full engine render → JPEG.
+- **Engine**: `spk_bake_cube_lut` (auto-exposure OFF by construction) + `spk_meter_exposure_ev`;
+  grain parallelised (12MP grain 66.8s → 17.2s); scanner/enlarger spectral 3D LUTs memoized.
+- **Presets**: one neutral preset per stock (20), saturation 0, scanner white/black correction on.
+- **Version still 0.8.0 / versionCode 10** — bump before any release.
+
+### Open issues — both were attempted, the attempt failed and was reverted
+
+1. **Tungsten stocks preview blue in the viewfinder.** Cause confirmed by inspection:
+   `FilmStockBalance` / `CreativeWhiteBalance` are **not `SpektraParams` fields** — they are Kotlin
+   transforms applied to pixels *before* the engine. `LutBakery` bakes from params only, so the bake
+   cannot see them (0 hits for `FilmStockBalance` in `LutBakery.kt`). **The camera capture path does
+   not apply them either** — only the editor does (`MainActivity.kt:794`). So an in-app photo is
+   consistently wrong in both viewfinder and export; opening that same file in the edit page
+   corrects it.
+2. **Lens focal lengths ignore the 3:2 crop.** `equivalentFocal` (`CameraSession.kt:153`) uses the
+   full active-array diagonal, but the app crops to 3:2, so the shown equivalents read wider than
+   what is actually delivered.
+
+**A failed attempt at both is preserved on branch `wip/reverted-wb-focal`** (`9a46dc1`, `70e20dd`).
+**Do not simply re-apply it.** It caused (a) apparent overexposure on *every* stock — cause never
+identified, (b) an orange flash while dragging onto a tungsten stock, (c) completely blue exports.
+The WB matrix was verified to be genuine identity for 18 of 20 stocks, so the overexposure was
+**not** the WB matrix. Diagnose before retrying.
+
+### Findings from 2026-08-10 (expensive to rediscover)
+
+- **R8/minify produces BLACK exports.** A release build installs, launches, and shows a working
+  viewfinder — then writes an all-black image. Shrinking removes something the processing path
+  reaches indirectly; it fails silently, not loudly. `proguard-rules.pro` keeps
+  `com.spectrafilm.engine.**`, the libraw/tiff/png writers, native methods and enums — not enough.
+  **Ship debug APKs until this is diagnosed.**
+- **Distribution needs no release keystore.** The repo commits a stable `debug.keystore`
+  (`app/build.gradle.kts:47`, `.gitignore` `!/debug.keystore`), so debug APKs are signed with a
+  consistent key and update cleanly forever from any machine with the repo. A release key is only
+  needed for the Play Store — and switching keys later forces every tester to uninstall, losing
+  their photos.
+- **Tested on exactly one device** (SM-S948W / Android 16). The camera needs API 28+ and a Camera2
+  `RAW_SENSOR` output. Without RAW the viewfinder still works but `canCapture` is false and the
+  shutter is disabled — graceful, no crash.
+
+### Next
+
+- Fix the two open issues above.
+- Not built: in-app gallery (Phase 3); vintage EV-comp meter (designed in `docs/CAMERA_PLAN.md`
+  §8c); focusing-screen overlay.
+- Deferred: diagnose the R8 failure; per-stock grain calibration; LibRaw lossy-DNG support (Samsung
+  Expert RAW writes lossy-JPEG DNG 1.6 that LibRaw rejects, so the platform decoder returns
+  display-referred pixels — the "deep-fried" import, a banner warns); export memory tiling.
+- **README does not mention the camera at all.**
+
+---
+
+## Inherited upstream state (2026-07-02, branch `claude/exciting-hamilton-hya62`) — engine roadmap
 
 - **"Exact + fast" pass MERGED (PR #109 + #110).** The PM directive (*"spektrafilm-exact result at
   ultra-fast speed"*) is fully landed: F1–F7 Kotlin robustness fixes, **E1** per-effect spatial
@@ -67,6 +139,12 @@ Per increment: default path byte-identical, opt-in/default-OFF, feature-on withi
 
 ## Evergreen operating notes (read once per session)
 
+> **Fork caveat (2026-08-10):** the notes below were written for the upstream Linux **container**
+> environment. On this fork's macOS checkout, ignore the container-reset / proxy-desync / PR-lifecycle
+> / oracle-setup notes and the `/opt/android-sdk` + `/home/user/spektrafilm` paths — none apply. The
+> engineering rules (parity gate, `-fno-finite-math-only`, GPU-preview-only, engine-param honesty,
+> APK build flags, user directives) **do** still apply.
+
 - **Container-reset recovery** (drilled 5+ times): the env re-clones to a stale commit mid-session.
   Recover via `git fetch origin main` (and the branch) → `git remote prune origin` → verify pushed
   work is on origin → `git reset --hard <ref>`. Untracked new files SURVIVE `reset --hard`; tracked
@@ -97,7 +175,9 @@ Per increment: default path byte-identical, opt-in/default-OFF, feature-on withi
 - **Build distributable debug APKs with plain `./gradlew :app:assembleDebug`** — NEVER
   `-Pandroid.injected.build.abi` (stamps `android:testOnly`, blocks tap-install, moves output to
   `intermediates/`). **R8/minified release is NOT exercised by CI** — smoke-test on-device before
-  tagging (last validated 2026-06-04 on SM-S948W/Android 16).
+  tagging (last validated 2026-06-04 on SM-S948W/Android 16). **As of 2026-08-10 it is BROKEN on the
+  fork**: minified builds render a working viewfinder but export an all-black image. See the
+  fork's findings section at the top.
 - **User directives on record:** do NOT modify `.github/workflows/` ('everything works there'); do
   NOT convert `.lut`→`.bin` (measured net-negative); **GPLv3 attribution "Film modeling powered by
   spektrafilm" must stay**; never put the model identifier in committed artifacts.
