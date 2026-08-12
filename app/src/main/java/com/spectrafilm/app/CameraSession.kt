@@ -636,6 +636,17 @@ class CameraSession(
         pendingResult = null
         val req = d.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE).apply {
             addTarget(rr.surface)
+            // The ISP disables belong on the STILL as well, even though a RAW frame is read
+            // before the ISP and cannot be affected by them. Measured on device: without
+            // them, the still leaves the vendor's own tone curve applied to the PREVIEW
+            // afterwards. The meter input's mean luma jumped 0.1239 -> 0.2302 (1.86x) while
+            // its max moved only 0.8863 -> 0.9569 (1.08x) — midtones lifted, highlights
+            // nearly still, which is the signature of a curve, not of an exposure change.
+            // TONEMAP_MODE kept reporting CONTRAST_CURVE throughout, so the mode was never
+            // the tell; the CURVE behind it had changed. Setting them here keeps the still
+            // from disturbing the state at all, which is cheaper and more reliable than
+            // trying to restore it afterwards.
+            applyIspDisables(this)
             applyFocus(this)
             set(CaptureRequest.CONTROL_AE_LOCK, aeLocked)
         }.build()

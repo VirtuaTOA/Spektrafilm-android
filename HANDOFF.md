@@ -1,6 +1,6 @@
 # Spektrafilm Android — Session Handoff
 
-## Current state (2026-08-10, fork `VirtuaTOA/Spektrafilm-android`, branch `main`)
+## Current state (2026-08-12, fork `VirtuaTOA/Spektrafilm-android`, branch `main`)
 
 **This is Dan's fork**, created 2026-08-08 from `thetechgeekko/Spektrafilm-android`. Everything
 below the horizontal rule is **inherited upstream context** — still accurate about the engine, but it
@@ -9,7 +9,7 @@ describes a pre-camera world and a Linux container. This fork runs on **macOS**,
 
 ### What this fork adds: a camera
 
-27 commits (`8ccfbac`..`6759e1d`), pushed to `origin/main` 2026-08-10. Replaces a five-app workflow
+27 commits (`8ccfbac`..`6759e1d`), pushed to `origin/main` 2026-08-12. Replaces a five-app workflow
 (Samsung Expert RAW → export DNG → import → process → Gallery) with: launcher → viewfinder with live
 film-stock preview → RAW capture → background processing → JPEG in `Pictures/Spektrafilm`.
 
@@ -44,8 +44,30 @@ identified, (b) an orange flash while dragging onto a tungsten stock, (c) comple
 The WB matrix was verified to be genuine identity for 18 of 20 stocks, so the overexposure was
 **not** the WB matrix. Diagnose before retrying.
 
-### Findings from 2026-08-10 (expensive to rediscover)
+### Findings from 2026-08-12 (expensive to rediscover)
 
+- **FIXED: the still capture was leaving the vendor tone curve on the preview.** After every shot
+  the viewfinder went flat, lifted and washed out until the user switched lens or toggled AE-L. Cause:
+  the still request used `TEMPLATE_STILL_CAPTURE` **without `applyIspDisables`**, so the identity
+  tone curve was not set on it, and the vendor's own curve stayed applied to the preview afterwards.
+  Fix: call `applyIspDisables` on the still request too (`CameraSession.capture`). Harmless to the
+  file — RAW is read before the ISP.
+  - **`TONEMAP_MODE` IS NOT A USEFUL SIGNAL HERE.** It read `CONTRAST_CURVE` before *and* after,
+    which is what made this take four wrong attempts: the mode says only that *a* curve is in use,
+    never *which*. `TONEMAP_CURVE` is what changed and it is not in the result the same way.
+  - **The measurement that actually worked** was logging the pixels handed to the meter
+    (mean/max/clipped) across one shutter press, phone still, same scene. Before the fix:
+    mean 0.1239→0.2302 (1.86x) while max 0.8863→0.9569 (1.08x). **Midtones lifting far more than
+    highlights is a CURVE; an exposure change scales both alike.** After: 0.1337→0.1327 (0.7%).
+    Reach for this first next time a "brightness" bug appears — `SENSOR_EXPOSURE_TIME`/
+    `SENSOR_SENSITIVITY` were identical throughout and proved nothing.
+  - Dead ends, so they are not retried: re-submitting the repeating request after a capture (does
+    not restore the curve, and restarts AE convergence — visibly changes contrast);
+    `CONTROL_POST_RAW_SENSITIVITY_BOOST` (pinned at 100 throughout); sensor readout-mode switching.
+  - Also fixed alongside: the startup auto-meter fired at 1200ms, measured on device to land while
+    `CONTROL_AE_STATE` was still SEARCHING, and pinned a gain from a frame 0.67 EV darker than the
+    one AE settled on. Now 1800ms. And the meter now re-runs after each capture (`meterUnlocked`),
+    which is what the user had been doing by hand with AE-L.
 - **R8/minify produces BLACK exports.** A release build installs, launches, and shows a working
   viewfinder — then writes an all-black image. Shrinking removes something the processing path
   reaches indirectly; it fails silently, not loudly. `proguard-rules.pro` keeps
@@ -139,7 +161,7 @@ Per increment: default path byte-identical, opt-in/default-OFF, feature-on withi
 
 ## Evergreen operating notes (read once per session)
 
-> **Fork caveat (2026-08-10):** the notes below were written for the upstream Linux **container**
+> **Fork caveat (2026-08-12):** the notes below were written for the upstream Linux **container**
 > environment. On this fork's macOS checkout, ignore the container-reset / proxy-desync / PR-lifecycle
 > / oracle-setup notes and the `/opt/android-sdk` + `/home/user/spektrafilm` paths — none apply. The
 > engineering rules (parity gate, `-fno-finite-math-only`, GPU-preview-only, engine-param honesty,
@@ -175,7 +197,7 @@ Per increment: default path byte-identical, opt-in/default-OFF, feature-on withi
 - **Build distributable debug APKs with plain `./gradlew :app:assembleDebug`** — NEVER
   `-Pandroid.injected.build.abi` (stamps `android:testOnly`, blocks tap-install, moves output to
   `intermediates/`). **R8/minified release is NOT exercised by CI** — smoke-test on-device before
-  tagging (last validated 2026-06-04 on SM-S948W/Android 16). **As of 2026-08-10 it is BROKEN on the
+  tagging (last validated 2026-06-04 on SM-S948W/Android 16). **As of 2026-08-12 it is BROKEN on the
   fork**: minified builds render a working viewfinder but export an all-black image. See the
   fork's findings section at the top.
 - **User directives on record:** do NOT modify `.github/workflows/` ('everything works there'); do

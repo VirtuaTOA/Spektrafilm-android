@@ -364,19 +364,51 @@ private fun CameraScreenSupported() {
         }
     }
 
+    /**
+     * Re-meter WITHOUT locking and update the shader gain.
+     *
+     * WHY THIS EXISTS: the baked LUT carries no exposure, so the viewfinder's brightness is
+     * whatever [gain] was last set to. That was metered ONCE, 1.2s after the stream started
+     * — measured on device to be while `aeState` was still SEARCHING, against a frame 0.67 EV
+     * darker than the one AE eventually settled on. The gain is therefore stale almost from
+     * the moment it is taken, and stays stale until the user happens to meter or switch lens.
+     * That is why tapping AE-L "fixes" a viewfinder that looks wrong after a capture: it is
+     * not the lock that helps, it is the re-meter that comes with it.
+     *
+     * [delayMs] lets a few fresh preview frames land first — right after a still,
+     * latestLumaImage() can still be holding a frame from during the capture. Kept SHORT
+     * (~4 frames at 30fps): the correction is visible as a brightness step, so it needs to
+     * land inside the 260ms shutter-flash animation that is covering the viewfinder anyway.
+     * At 400ms the step landed after the flash had cleared and read as a visible jump.
+     *
+     * Does nothing when the user has locked AE: they pinned that exposure deliberately.
+     */
+    fun meterUnlocked(why: String, delayMs: Long = 0L) {
+        val e = engine ?: return
+        if (aeLocked) return
+        scope.launch {
+            if (delayMs > 0L) kotlinx.coroutines.delay(delayMs)
+            if (aeLocked) return@launch          // may have been locked during the delay
+            val img = session.latestLumaImage() ?: return@launch
+            val ev = runCatching {
+                withContext(Dispatchers.Default) {
+                    img.use { e.meterExposureEv(it, camState.toParams()) }
+                }
+            }.getOrNull() ?: return@launch
+            gain = Math.pow(2.0, ev).toFloat()
+            Diag.i("camera: re-meter [$why] ev=%.3f gain=%.3f".format(ev, gain))
+        }
+    }
+
     // One automatic meter shortly after the stream starts, left UNLOCKED, so the viewfinder
     // is never wildly wrong before the user touches anything.
     LaunchedEffect(surface, lens, engine) {
-        val e = engine ?: return@LaunchedEffect
         if (surface == null) return@LaunchedEffect
-        kotlinx.coroutines.delay(1200)
-        if (aeLocked) return@LaunchedEffect
-        val img = session.latestLumaImage() ?: return@LaunchedEffect
-        runCatching {
-            withContext(Dispatchers.Default) {
-                img.use { e.meterExposureEv(it, camState.toParams()) }
-            }
-        }.getOrNull()?.let { gain = Math.pow(2.0, it).toFloat() }
+        // 1800ms, not 1200: on device the 1200ms meter landed while CONTROL_AE_STATE was
+        // still SEARCHING, so it metered a frame 0.67 EV darker than the one AE settled on
+        // and pinned a gain that was wrong before the user had touched anything.
+        kotlinx.coroutines.delay(1800)
+        meterUnlocked("startup")
     }
 
     LaunchedEffect(Unit) {
@@ -479,6 +511,10 @@ private fun CameraScreenSupported() {
                 )
                 session.capture(target, displayRotationDegrees(ctx)) { file, err ->
                     capturing = false
+                    // Re-meter after the shutter. This is exactly what the user was doing by
+                    // hand with AE-L to clear the post-capture brightness jump; doing it here
+                    // makes it automatic. No-op when AE is locked.
+                    meterUnlocked("after capture", delayMs = 120)
                     if (file == null) {
                         error = err ?: "capture failed"
                     } else {
