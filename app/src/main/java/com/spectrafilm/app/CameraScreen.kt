@@ -35,6 +35,12 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.WindowInsetsSides
+import androidx.compose.foundation.layout.asPaddingValues
+import androidx.compose.foundation.layout.only
+import androidx.compose.foundation.layout.systemBars
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -75,6 +81,7 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -99,6 +106,25 @@ private val FOCUS_ITEM_WIDTH = 74.dp
 /** 35 mm is 3:2. Shared: the viewfinder frame, the saved crop and the focal-length maths must
  *  all agree — a mismatch would report a field of view the photograph does not have. */
 internal const val FILM_ASPECT = 3f / 2f
+
+/** Narrowest the landscape control panel may become. The viewfinder takes a full-height 3:2
+ *  frame and the panel takes the rest, so this is the backstop that keeps the controls usable
+ *  on a screen too wide (or too short) for both to fit at full size. */
+private val LANDSCAPE_PANEL_MIN = 240.dp
+
+/**
+ * Left inset for the whole landscape layout, so the frame is not flush against the screen edge.
+ *
+ * Chosen to BALANCE the two gaps either side of the frame: the one to the screen edge, and the
+ * one to the lens row that starts the control panel. The panel keeps its content centred in
+ * whatever width is left, so with screen width W, frame width F and lens-row width L, the right
+ * gap is (W - P - F)/2 - L/2. Setting that equal to P gives P = (W - F - L)/3, which measured
+ * off the device (W=2340, F=1404, L~460 px at 480dpi) lands near 58dp.
+ *
+ * Purely cosmetic, and it does NOT shrink the frame — the frame is sized from the height. Raise
+ * it to push the frame further right, lower it to move it back toward the edge.
+ */
+private val LANDSCAPE_FRAME_START = 58.dp
 
 @Composable
 fun CameraScreen() {
@@ -453,14 +479,6 @@ private fun CameraScreenSupported() {
         error?.let {
             Text(it, color = Color(0xFFFF8A80), style = MaterialTheme.typography.bodySmall)
         }
-        if (queued > 0) {
-            Text(
-                if (queued == 1) "1 photo rendering…" else "$queued photos rendering…",
-                color = UNSELECTED,
-                fontSize = 11.sp,
-                letterSpacing = 1.sp,
-            )
-        }
 
         if (manualFocus) {
             FocusWheel(
@@ -564,17 +582,48 @@ private fun CameraScreenSupported() {
             // viewfinder a squashed strip with a wall of black beneath it.
             // systemBarsPadding on the ROW: in landscape the status bar sits over the
             // viewfinder's top edge, so its icons showed through the image.
-            Row(Modifier.fillMaxSize().systemBarsPadding()) {
-                Box(Modifier.weight(1f).fillMaxHeight()) { viewfinder() }
-                Column(
-                    Modifier.width(300.dp).fillMaxHeight()
-                        .background(Color.Black)
-                        .padding(horizontal = 8.dp, vertical = 12.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.spacedBy(10.dp, Alignment.CenterVertically),
-                ) {
-                    toggles()
-                    controls()
+            // VERTICAL CENTRING: systemBarsPadding() applies each edge's REAL inset, and in
+            // landscape the top (status bar) and bottom (gesture bar) differ — so the
+            // letterboxed frame ended up with visibly more black above it than below. Using
+            // the LARGER of the two on both edges keeps the frame clear of each bar while
+            // leaving it centred on the screen.
+            val bars = WindowInsets.systemBars.asPaddingValues()
+            val evenVertical = maxOf(bars.calculateTopPadding(), bars.calculateBottomPadding())
+            BoxWithConstraints(
+                Modifier.fillMaxSize()
+                    .windowInsetsPadding(WindowInsets.systemBars.only(WindowInsetsSides.Horizontal))
+                    .padding(top = evenVertical, bottom = evenVertical)
+                    // On the CONSTRAINTS, not the inner Row: maxWidth below must already have
+                    // this taken out, or the frame-vs-panel split would be computed against
+                    // width the layout does not actually have.
+                    .padding(start = LANDSCAPE_FRAME_START),
+            ) {
+                // Size the viewfinder box to EXACTLY a full-height 3:2 frame, rather than
+                // handing it the leftover width and letting the GL view letterbox inside it.
+                //
+                // Before, the panel's fixed 300.dp left the frame width-limited: it filled that
+                // width and paid for it with black bars above and below. Deriving the width
+                // from the height instead makes the box the frame's own shape, so the letterbox
+                // collapses to nothing and the frame is as large as the screen height allows —
+                // the aspect ratio is unchanged and nothing is cropped, so the finder still
+                // shows precisely what the file will contain.
+                //
+                // Capped so the panel keeps LANDSCAPE_PANEL_MIN: on a proportionally wider or
+                // shorter screen a full-height frame could otherwise crowd the controls out,
+                // and there the bars come back rather than the buttons becoming unusable.
+                val frameWidth = minOf(maxHeight * FILM_ASPECT, maxWidth - LANDSCAPE_PANEL_MIN)
+                Row(Modifier.fillMaxSize()) {
+                    Box(Modifier.width(frameWidth).fillMaxHeight()) { viewfinder() }
+                    Column(
+                        Modifier.weight(1f).fillMaxHeight()
+                            .background(Color.Black)
+                            .padding(horizontal = 8.dp, vertical = 12.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(10.dp, Alignment.CenterVertically),
+                    ) {
+                        toggles()
+                        controls()
+                    }
                 }
             }
         } else {
@@ -606,6 +655,17 @@ private fun CameraScreenSupported() {
                 Modifier.align(Alignment.TopEnd).statusBarsPadding()
                     .padding(top = 6.dp, end = 16.dp),
             ) { toggles() }
+        }
+
+        // Outside the if/else, so ONE placement serves both orientations — and outside both
+        // layouts, so appearing and disappearing cannot move the viewfinder.
+        if (queued > 0) {
+            RenderingIndicator(
+                queued = queued,
+                modifier = Modifier.align(Alignment.BottomEnd)
+                    .systemBarsPadding()
+                    .padding(end = 14.dp, bottom = 8.dp),
+            )
         }
     }
 }
@@ -701,6 +761,50 @@ private fun focusLabel(diopters: Float): String {
 @Composable
 private fun ProcessToggle(slideMode: Boolean, onToggle: () -> Unit) =
     TwoToneToggle("NEGATIVE", "SLIDE", rightActive = slideMode, onClick = onToggle)
+
+/**
+ * "N photos rendering" with a cycling 1-2-3 stop animation, drawn as an OVERLAY.
+ *
+ * WHY AN OVERLAY: this was a Text inside the controls Column, so it appeared on every capture
+ * and vanished again when the queue drained — resizing the column, and with it the viewfinder,
+ * on every single shot. Drawn over the layout it takes no space in either orientation, so the
+ * frame stays exactly where it was composed.
+ *
+ * The stops sit in a FIXED-WIDTH slot. Letting the string grow from one to three would change
+ * the row's width, and against a bottom-RIGHT alignment that walks the whole label sideways
+ * once a second — swapping one kind of twitch for another.
+ */
+@Composable
+private fun RenderingIndicator(queued: Int, modifier: Modifier = Modifier) {
+    var step by remember { mutableIntStateOf(0) }
+    LaunchedEffect(Unit) {
+        while (true) {
+            kotlinx.coroutines.delay(420)
+            step = (step + 1) % 3
+        }
+    }
+    val label = if (queued == 1) "1 photo rendering" else "$queued photos rendering"
+    Row(modifier, verticalAlignment = Alignment.Bottom) {
+        Text(
+            label,
+            color = UNSELECTED,
+            fontSize = 9.sp,
+            fontStyle = FontStyle.Italic,
+            letterSpacing = 0.5.sp,
+            maxLines = 1,
+        )
+        Box(Modifier.width(14.dp)) {
+            Text(
+                ".".repeat(step + 1),
+                color = UNSELECTED,
+                fontSize = 9.sp,
+                fontStyle = FontStyle.Italic,
+                letterSpacing = 0.5.sp,
+                maxLines = 1,
+            )
+        }
+    }
+}
 
 /**
  * A stock-camera style two-tone label: the active half white and bold, the other grey.
