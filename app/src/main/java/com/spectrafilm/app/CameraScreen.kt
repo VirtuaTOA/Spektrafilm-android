@@ -578,20 +578,34 @@ private fun CameraScreenSupported() {
                 }
             }
         } else {
-            viewfinder()
+            // COLUMN, not an overlay. The viewfinder used to fillMaxSize() with the controls
+            // painted over its lower part at BottomCenter — so the GL view letterboxed a
+            // correct 3:2 frame into the WHOLE screen (1080x2340 -> 1080x1620, centred) and
+            // the opaque control panel then covered its bottom ~340px. The finder was framing
+            // the full frame all along; the user simply could not see the bottom fifth of it,
+            // so every capture came back containing things that were never on screen.
+            //
+            // Giving the viewfinder weight(1f) hands it only the space actually left over, and
+            // it letterboxes within that — so what is visible is the whole frame. Landscape
+            // already did this with a Row + fixed side panel, which is why it never showed
+            // the fault.
+            Column(Modifier.fillMaxSize()) {
+                Box(Modifier.weight(1f).fillMaxWidth()) { viewfinder() }
+                Column(
+                    Modifier.fillMaxWidth()
+                        .background(Color.Black)
+                        .navigationBarsPadding()
+                        .padding(top = 10.dp, bottom = 14.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                    content = controls,
+                )
+            }
+            // Stays an overlay: it sits in the letterbox bar above the image, not over it.
             Box(
                 Modifier.align(Alignment.TopEnd).statusBarsPadding()
                     .padding(top = 6.dp, end = 16.dp),
             ) { toggles() }
-            Column(
-                Modifier.align(Alignment.BottomCenter).fillMaxWidth()
-                    .background(Color.Black)
-                    .navigationBarsPadding()
-                    .padding(top = 10.dp, bottom = 14.dp),
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.spacedBy(10.dp),
-                content = controls,
-            )
         }
     }
 }
