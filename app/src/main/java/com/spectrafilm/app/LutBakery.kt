@@ -49,6 +49,9 @@ object LutBakery {
         val gamutCompress: Float,
         val cctfEncoded: Boolean,
         val outputColorSpace: ColorSpace,
+        /** Part of the key because the engine bakes it INTO the lattice: without it, swapping
+         *  to a tungsten stock would be served the previous stock's unbalanced LUT. */
+        val balanceToIlluminant: Boolean,
     )
 
     // Small LRU. Bounded because a user can swipe through every stock; each 17^3 LUT
@@ -84,6 +87,7 @@ object LutBakery {
             gamutCompress = state.gamutCompress,
             cctfEncoded = state.savingCctfEncoding,
             outputColorSpace = state.outputColorSpace,
+            balanceToIlluminant = state.balanceToFilmStock,
         )
         cached(key)?.let { return it }
 

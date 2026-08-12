@@ -94,7 +94,8 @@ NdArray build_filming_tc_lut(const Profile& film, const NdArray& spectra_lut,
                                  InputGamutCompress::kOff,
                              double in_gamut_knee_threshold = 0.0,
                              double in_gamut_knee_limit = 1.0,
-                             double in_gamut_knee_power = 6.0);
+                             double in_gamut_knee_power = 6.0,
+                             bool balance_to_illuminant = false);
 
 // expose(): rgb (npix,3, linear ProPhoto, double — the pipeline runs the image
 // as float64) -> log_raw (npix,3). Reuses the project's verified cubic-2D LUT

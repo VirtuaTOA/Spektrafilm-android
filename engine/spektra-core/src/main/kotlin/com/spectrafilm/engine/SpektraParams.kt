@@ -56,6 +56,21 @@ data class CameraParams(
     val filmFormatMm: Float = 35.0f,
     val filterUv: Triple<Float, Float, Float> = Triple(0.0f, 410.0f, 8.0f),
     val filterIr: Triple<Float, Float, Float> = Triple(0.0f, 675.0f, 15.0f),
+    /**
+     * Balance the film's channel response to the working (D55) illuminant — the engine-side
+     * "virtual 85 filter".
+     *
+     * A tungsten stock (Vision3 200T/500T) renders a daylight scene blue because its measured
+     * spectral sensitivities are balanced for ~2856 K. That is authentic, so this is OFF by
+     * default and the default render stays byte-identical. Turning it on equalises the channels'
+     * integrated response to the illuminant, at the SENSITIVITIES — before any spectrum is
+     * reconstructed — so the emulsion still meets the real scene spectrum through its real curves.
+     *
+     * Being a params field rather than a pre-engine pass is the point: [SpektraEngine.bakeCubeLut]
+     * and every render path pick it up automatically, so the camera viewfinder, the capture and the
+     * editor cannot disagree about it.
+     */
+    val balanceToIlluminant: Boolean = false,
     val diffusionFilter: DiffusionFilterParams = DiffusionFilterParams(),
 )
 

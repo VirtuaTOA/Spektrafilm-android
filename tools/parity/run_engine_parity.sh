@@ -58,6 +58,7 @@ TESTS=(
   "test_tonecurve|$ASSET/profiles/kodak_portra_400.json|$G/scan_portra"
   "test_half"
   "test_bake_lut|$ASSET"
+  "test_film_balance_e2e|$ASSET"
   "test_params_passthrough|$ASSET|tests/scan_portra_input_rgb.f64"
   "test_highlight_boost_e2e|$ASSET|$G/scan_portra_boost|tests/scan_portra_input_rgb.f64|$G"
   "test_spatial_decouple_e2e|$ASSET|$G/scan_portra_lensblur_nohalation|tests/scan_portra_input_rgb.f64|$G"

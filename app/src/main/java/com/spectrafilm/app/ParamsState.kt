@@ -389,6 +389,10 @@ class ParamsState {
             filmFormatMm = filmFormatMmOverride ?: filmFormatMm,
             filterUv = filterUv,
             filterIr = filterIr,
+            // Engine-side "virtual 85 filter". Sending it as a PARAM (rather than pre-multiplying
+            // the input, as this did before) is what makes the viewfinder, the capture and the
+            // editor agree: LutBakery bakes from params, so the GPU preview picks it up too.
+            balanceToIlluminant = balanceToFilmStock,
             diffusionFilter = cameraDiffusionState.toParams(),
         ),
         enlarger = EnlargerParams(

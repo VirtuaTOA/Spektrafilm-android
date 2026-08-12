@@ -252,7 +252,8 @@ NdArray build_filming_tc_lut(const Profile& film, const NdArray& spectra_lut_in,
                              InputGamutCompress input_gamut_compress,
                              double in_gamut_knee_threshold,
                              double in_gamut_knee_limit,
-                             double in_gamut_knee_power) {
+                             double in_gamut_knee_power,
+                             bool balance_to_illuminant) {
     // Optional spectral-domain blur of the spectra LUT (default 0 -> no-op). Done
     // up front, before the sensitivity contraction, matching upstream
     // compute_hanatos2025_tc_lut.
@@ -275,6 +276,40 @@ NdArray build_filming_tc_lut(const Profile& film, const NdArray& spectra_lut_in,
             if (std::isnan(v) || std::isinf(v)) v = 0.0;  // np.nan_to_num
             sens[s * 3 + c] = v;
         }
+
+    // OPT-IN: balance the film's channel response to `illuminant` — the engine-side
+    // "virtual 85 filter". Default false, so `sens` is untouched and every existing
+    // render stays byte-identical.
+    //
+    // WHY HERE. A tungsten stock (Vision3 200T/500T) renders a daylight scene blue
+    // because its MEASURED log_sensitivity is what it is: the emulsion is balanced for
+    // ~2856 K, so a blue-rich daylight spectrum over-drives its blue record. That is
+    // authentic film behaviour and the default path must keep it.
+    // `info.reference_illuminant` is metadata the engine never reads at runtime, so
+    // there was no existing normalisation to adjust — this adds one.
+    //
+    // Equalising the channels' integrated response to the illuminant is what an 85
+    // amber filter achieves photographically, and it is the same idiom the band-pass
+    // block below already uses to preserve balance. Critically it acts on the
+    // SENSITIVITIES, before any spectrum is reconstructed, so the emulsion still meets
+    // the real scene spectrum through its real curves. Adapting the input RGB instead
+    // (the previous Kotlin-side approach) hands the film a metamer of a DIFFERENT
+    // colour — exactly the fidelity a spectral engine exists to preserve.
+    //
+    // Rescaled by the geometric mean so only the channel BALANCE moves and the overall
+    // level does not: a pure white balance, never a brightness change.
+    if (balance_to_illuminant) {
+        double norm[3] = {0.0, 0.0, 0.0};
+        for (int s = 0; s < S; ++s)
+            for (int c = 0; c < 3; ++c)
+                norm[c] += sens[s * 3 + c] * illuminant[s];
+        if (norm[0] > 0.0 && norm[1] > 0.0 && norm[2] > 0.0) {
+            const double g = std::cbrt(norm[0] * norm[1] * norm[2]);
+            for (int s = 0; s < S; ++s)
+                for (int c = 0; c < 3; ++c)
+                    sens[s * 3 + c] *= g / norm[c];
+        }
+    }
 
     // Camera UV/IR band-pass cut filter (filming.py::_rgb_to_film_raw, applied to
     // `sensitivity` BEFORE it is handed to compute_hanatos2025_tc_lut). Gated on

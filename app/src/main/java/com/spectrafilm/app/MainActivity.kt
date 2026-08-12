@@ -787,16 +787,17 @@ class MainActivity : ComponentActivity() {
                         CreativeWhiteBalance.matrix(state.creativeWbTemp, state.creativeWbTint),
                     )
                 }
-                // "Balance to film stock" (virtual 85-filter): adapt the D50 input to the film's reference
-                // illuminant so a tungsten stock renders neutral. Same parity-free bake as Creative WB;
-                // keyed on filmProfile + the toggle in the decode cache below. Gated on isMeaningful so
-                // daylight stocks (already neutral) are a true no-op — no shift, no extra decode.
-                if (state.balanceToFilmStock && FilmStockBalance.isMeaningful(ctx, state.filmProfile)) {
-                    CreativeWhiteBalance.applyInPlace(
-                        it.data, it.width * it.height,
-                        FilmStockBalance.matrix(ctx, state.filmProfile),
-                    )
-                }
+                // "Balance to film stock" is NO LONGER APPLIED HERE. It is now an engine param
+                // (CameraParams.balanceToIlluminant), which renormalises the film's spectral
+                // sensitivities instead of pre-multiplying the input. Two reasons it moved:
+                //   1. As a pre-engine matrix it was invisible to anything that did not come
+                //      through loadSource — the camera's LUT bake and its capture path both
+                //      missed it, so the viewfinder and in-app photos stayed blue on tungsten
+                //      stocks while the same file looked correct in the editor.
+                //   2. Adapting RGB before spectral upsampling hands the emulsion a metamer of a
+                //      DIFFERENT colour; renormalising the sensitivities lets the film meet the
+                //      real scene spectrum through its real curves.
+                // FilmStockBalance is still the source of truth for WHICH stocks want it.
                 // Breadcrumb: source KIND + result dims only (no URI/path — see Diag policy).
                 Diag.i("decode kind=${sourceKind.name} ${it.width}x${it.height} maxEdge=$maxEdge")
             }

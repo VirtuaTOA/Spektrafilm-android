@@ -380,7 +380,8 @@ static const spk::NdArray& engine_tc_lut(spk_engine* eng,
                                          const float* filter_uv,
                                          const float* filter_ir,
                                          spk::InputGamutCompress input_gamut_compress =
-                                             spk::InputGamutCompress::kOff) {
+                                             spk::InputGamutCompress::kOff,
+                                         bool balance_to_illuminant = false) {
     // Compose a key that folds the blur sigma's exact IEEE-754 bytes plus the
     // window/surface toggles and the camera UV/IR band-pass so distinct adaptations
     // (or float jitter) never alias. The DEFAULT (blur==0, window on, surface off,
@@ -393,7 +394,7 @@ static const spk::NdArray& engine_tc_lut(spk_engine* eng,
         input_gamut_compress != spk::InputGamutCompress::kOff;
     std::string key = film_id;
     if (spectral_gaussian_blur > 0.0f || !apply_window || apply_surface ||
-        band_pass_on || gamut_in_on) {
+        band_pass_on || gamut_in_on || balance_to_illuminant) {
         key.push_back('|');
         const unsigned char* b =
             reinterpret_cast<const unsigned char*>(&spectral_gaussian_blur);
@@ -415,6 +416,10 @@ static const spk::NdArray& engine_tc_lut(spk_engine* eng,
             for (size_t i = 0; i < 3 * sizeof(float); ++i)
                 key.push_back(static_cast<char>(fr[i]));
         }
+        // Same rule for the illuminant balance: only folded when ON, so the default
+        // key stays the bare film id. Without this a warm engine would hand back the
+        // unbalanced LUT after the toggle flipped (what test_lut_cache_e2e checks).
+        if (balance_to_illuminant) key.push_back('L');
         // Fold the input gamut-compression mode only when active, so the default
         // (kOff) key is byte-identical to the pre-feature film-id key.
         if (gamut_in_on) {
@@ -436,7 +441,9 @@ static const spk::NdArray& engine_tc_lut(spk_engine* eng,
                                                  spectral_gaussian_blur,
                                                  apply_window, apply_surface,
                                                  filter_uv, filter_ir,
-                                                 input_gamut_compress);
+                                                 input_gamut_compress,
+                                                 0.0, 1.0, 6.0,
+                                                 balance_to_illuminant);
     std::lock_guard<std::mutex> g(eng->cache_mutex);
     return eng->tc_lut_cache.emplace(key, std::move(lut)).first->second;
 }
@@ -511,6 +518,14 @@ static uint64_t compute_film_cache_key(const std::vector<double>& rgb, int width
     // so the digest is honest.
     h = fnv1a64(h, p->camera_filter_uv, sizeof(p->camera_filter_uv));
     h = fnv1a64(h, p->camera_filter_ir, sizeof(p->camera_filter_ir));
+    // The illuminant balance renormalises the film's spectral sensitivities, so it changes
+    // the filming tc_lut and therefore film_density_cmy — it MUST be folded here or the memo
+    // hands back a stale film density and the parameter has no effect at all. That is exactly
+    // what test_film_balance_e2e caught: every other piece of plumbing was correct and the
+    // render still did not move. Default 0 keeps the key unchanged for the default path;
+    // folded ALWAYS so the digest is honest.
+    h = fnv1a64(h, &p->camera_balance_to_illuminant,
+                sizeof(p->camera_balance_to_illuminant));
     // Input gamut compression bakes a radial-to-locus chromaticity remap into the
     // filming tc_lut (build_filming_tc_lut), so it changes film_density_cmy and MUST
     // be part of the print-route memo key — otherwise toggling it returns a stale
@@ -624,6 +639,14 @@ static uint64_t compute_print_density_key(const std::vector<float>& film_density
     h = fnv1a64(h, &p->apply_hanatos_surface, sizeof(p->apply_hanatos_surface));
     h = fnv1a64(h, p->camera_filter_uv, sizeof(p->camera_filter_uv));
     h = fnv1a64(h, p->camera_filter_ir, sizeof(p->camera_filter_ir));
+    // The illuminant balance renormalises the film's spectral sensitivities, so it changes
+    // the filming tc_lut and therefore film_density_cmy — it MUST be folded here or the memo
+    // hands back a stale film density and the parameter has no effect at all. That is exactly
+    // what test_film_balance_e2e caught: every other piece of plumbing was correct and the
+    // render still did not move. Default 0 keeps the key unchanged for the default path;
+    // folded ALWAYS so the digest is honest.
+    h = fnv1a64(h, &p->camera_balance_to_illuminant,
+                sizeof(p->camera_balance_to_illuminant));
     h = fnv1a64(h, &p->input_gamut_compress, sizeof(p->input_gamut_compress));
     // Dichroic neutral CC (database flag + explicit values) + user shifts.
     h = fnv1a64(h, &p->neutral_print_filters_from_database,
@@ -964,7 +987,8 @@ spk_status run_scan_film(spk_engine* eng, const spk_image* in, const spk_params*
                                     p->apply_hanatos_surface != 0,
                                     p->camera_filter_uv, p->camera_filter_ir,
                                     static_cast<spk::InputGamutCompress>(
-                                        p->input_gamut_compress));
+                                        p->input_gamut_compress),
+                                    p->camera_balance_to_illuminant != 0);
     } catch (const std::exception&) {
         return SPK_ERR_ASSET_IO;
     }
@@ -1145,7 +1169,8 @@ spk_status run_print(spk_engine* eng, const spk_image* in, const spk_params* p,
                                     p->apply_hanatos_surface != 0,
                                     p->camera_filter_uv, p->camera_filter_ir,
                                     static_cast<spk::InputGamutCompress>(
-                                        p->input_gamut_compress));
+                                        p->input_gamut_compress),
+                                    p->camera_balance_to_illuminant != 0);
     } catch (const std::exception&) {
         return SPK_ERR_ASSET_IO;
     }
@@ -1582,6 +1607,7 @@ void spk_default_params(spk_params* p) {
     p->auto_exposure_method = nullptr;
     p->lens_blur_um = 0.0f;
     p->film_format_mm = 35.0f;
+    p->camera_balance_to_illuminant = 0;   /* opt-in: authentic film balance by default */
     p->camera_filter_uv[0] = 0.0f; p->camera_filter_uv[1] = 410.0f; p->camera_filter_uv[2] = 8.0f;
     p->camera_filter_ir[0] = 0.0f; p->camera_filter_ir[1] = 675.0f; p->camera_filter_ir[2] = 15.0f;
     p->camera_diffusion_active = 0;

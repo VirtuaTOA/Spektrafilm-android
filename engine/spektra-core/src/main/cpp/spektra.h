@@ -125,6 +125,11 @@ typedef struct {
     /* --- camera (extended) --- */
     float camera_filter_uv[3];        /* (strength, center_nm, sigma_nm) */
     float camera_filter_ir[3];        /* (strength, center_nm, sigma_nm) */
+    /* Balance the film's channel response to the working (D55) illuminant — the
+       engine-side "virtual 85 filter" for tungsten stocks. Opt-in; 0 leaves the
+       measured sensitivities untouched and every existing render byte-identical.
+       Folded into the filming tc_lut cache key, so toggling it rebuilds. */
+    int32_t camera_balance_to_illuminant;  /* bool */
     /* camera diffusion filter (Black Pro-Mist family) */
     int32_t camera_diffusion_active;  /* bool */
     float camera_diffusion_strength;

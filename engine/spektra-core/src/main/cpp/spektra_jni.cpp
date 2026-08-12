@@ -284,6 +284,8 @@ bool marshal_params(JNIEnv* env, jobject params, spk_params* out, ParamStorage* 
         out->film_format_mm = call_float(env, camera, "getFilmFormatMm");
         read_triple_f(env, camera, "getFilterUv", out->camera_filter_uv);
         read_triple_f(env, camera, "getFilterIr", out->camera_filter_ir);
+        out->camera_balance_to_illuminant =
+            call_bool(env, camera, "getBalanceToIlluminant") ? 1 : 0;
         jobject df = call_obj(env, camera, "getDiffusionFilter",
             "()Lcom/spectrafilm/engine/DiffusionFilterParams;");
         read_diffusion_filter(env, df, &out->camera_diffusion_active,
