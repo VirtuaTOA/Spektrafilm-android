@@ -96,7 +96,9 @@ private val STOCK_ITEM_WIDTH = 124.dp
 private val FOCUS_ITEM_WIDTH = 74.dp
 
 /** 35 mm frame: 36x24 mm. The sensor is 4:3; this is what the app keeps. */
-private const val FILM_ASPECT = 3f / 2f
+/** 35 mm is 3:2. Shared: the viewfinder frame, the saved crop and the focal-length maths must
+ *  all agree — a mismatch would report a field of view the photograph does not have. */
+internal const val FILM_ASPECT = 3f / 2f
 
 @Composable
 fun CameraScreen() {

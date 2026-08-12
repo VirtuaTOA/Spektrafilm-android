@@ -123,12 +123,15 @@ private fun cropToFilmAspect(src: android.graphics.Bitmap): android.graphics.Bit
     val landscape = w >= h
     val targetW: Int
     val targetH: Int
+    // FILM_ASPECT, not a literal: CameraInventory.equivalentFocal mirrors this crop to work
+    // out the 35 mm-equivalent focal length, so if the two ever disagreed the lens labels
+    // would describe a field of view the saved photograph does not have.
     if (landscape) {
-        targetH = minOf(h, Math.round(w / 1.5f))
-        targetW = minOf(w, Math.round(targetH * 1.5f))
+        targetH = minOf(h, Math.round(w / FILM_ASPECT))
+        targetW = minOf(w, Math.round(targetH * FILM_ASPECT))
     } else {
-        targetW = minOf(w, Math.round(h / 1.5f))
-        targetH = minOf(h, Math.round(targetW * 1.5f))
+        targetW = minOf(w, Math.round(h / FILM_ASPECT))
+        targetH = minOf(h, Math.round(targetW * FILM_ASPECT))
     }
     if (targetW >= w && targetH >= h) return src
     val x = ((w - targetW) / 2).coerceAtLeast(0)

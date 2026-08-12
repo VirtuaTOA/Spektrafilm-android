@@ -74,6 +74,10 @@ data class LensOption(
     val supportsRaw: Boolean get() = rawSize != null
 }
 
+/** Diagonal of a full-frame 35 mm still, hypot(36, 24) mm — the reference every "equivalent
+ *  focal length" is quoted against. */
+private const val FULL_FRAME_DIAGONAL_MM = 43.2666
+
 object CameraInventory {
 
     /** The camera screen needs API 28 (SessionConfiguration + setPhysicalCameraId). */
@@ -143,12 +147,24 @@ object CameraInventory {
     }
 
     /**
-     * 35mm-equivalent focal length: actual focal x crop factor, where the crop factor is
-     * the 35mm frame diagonal (43.27 mm) over this sensor's diagonal.
+     * 35mm-equivalent focal length: actual focal x crop factor, where the crop factor is the
+     * 35 mm frame diagonal over the diagonal of the area this app actually images.
      *
-     * The physical size reported covers the FULL pixel array, but only the active array is
-     * imaged, so it is scaled by the active/pixel ratio first — otherwise a sensor that
-     * crops for stills reports a wider equivalent than it actually delivers.
+     * Everything here is read from CameraCharacteristics, so it is computed per device and
+     * per lens — nothing is hard-coded for any particular phone. Accuracy therefore depends
+     * on the vendor reporting SENSOR_INFO_PHYSICAL_SIZE honestly; where it does not, or where
+     * the key is missing entirely, the raw focal length is returned unconverted rather than a
+     * confidently wrong number.
+     *
+     * TWO corrections are applied, and both make the equivalent LONGER:
+     *
+     * 1. ACTIVE vs PIXEL array. The physical size covers the full pixel array, but only the
+     *    active array is imaged, so it is scaled by the active/pixel ratio.
+     * 2. THE 3:2 FILM CROP. The app does not deliver the whole active array — cropToFilmAspect
+     *    trims it to the 35 mm frame, keeping the longer side. Comparing the FULL sensor
+     *    diagonal against 35 mm's would understate the crop factor and advertise a wider lens
+     *    than the photograph shows. Mirroring the crop here makes both frames 3:2, so the
+     *    diagonal ratio is like-for-like. On a 4:3 sensor this lengthens the result ~4%.
      */
     private fun equivalentFocal(c: CameraCharacteristics, focalMm: Float): Int {
         val phys = c.get(CameraCharacteristics.SENSOR_INFO_PHYSICAL_SIZE)
@@ -161,9 +177,13 @@ object CameraInventory {
             wMm *= active.width().toFloat() / pixels.width
             hMm *= active.height().toFloat() / pixels.height
         }
-        val diag = kotlin.math.hypot(wMm.toDouble(), hMm.toDouble())
+        // Same rule as cropToFilmAspect: keep the longer side, trim the shorter to
+        // longer/FILM_ASPECT. min() so a sensor already narrower than 3:2 is left alone.
+        val longMm = maxOf(wMm, hMm)
+        val shortMm = minOf(minOf(wMm, hMm), longMm / FILM_ASPECT)
+        val diag = kotlin.math.hypot(longMm.toDouble(), shortMm.toDouble())
         if (diag <= 0.0) return focalMm.roundToInt()
-        return (focalMm * (43.2666 / diag)).roundToInt()
+        return (focalMm * (FULL_FRAME_DIAGONAL_MM / diag)).roundToInt()
     }
 
     /** Sensor orientation (degrees) for the logical camera driving the stream. */
