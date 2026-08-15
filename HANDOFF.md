@@ -171,6 +171,29 @@ stock + 35mm-equivalent focal from `CaptureJob` (UI decisions, not sensor facts)
 cause in one go. Note gfxinfo percentiles are frame WORK time, not presentation rate. The camera
 preview at 30fps also pins a 120Hz panel to 60 — hence `pausePreview()` while covered.
 
+### Diffusion filters — only ONE of four families is reachable
+
+`model/diffusion.cpp` implements FOUR families with their own PSF shapes —
+`kGlimmerglass`, `kBlackProMist`, `kProMist`, `kCinebloom` (`model/diffusion.h`) — but
+**the C API has no field to select one**. `spektra.cpp` `apply_user_diffusion_filter` hardcodes
+`kBlackProMist`, with the comment "the C API does not expose filter_family". Kotlin's
+`DiffusionFilterParams.filterFamily` therefore travels as far as the JNI boundary and is dropped.
+
+The viewfinder's filter picker (bottom-right of the frame) currently offers Black Pro-Mist grades
+only, for that reason. To offer the other three:
+
+1. add `int32_t camera_diffusion_family` to `spk_params` (and the enlarger twin if wanted),
+2. read it in `spektra_jni.cpp` from the Kotlin `filterFamily` string,
+3. map string -> `DiffusionFamily` in `apply_user_diffusion_filter` instead of the hardcoded value.
+
+Parity-safe: default stays `kBlackProMist`, so the default path is byte-identical — but it touches
+the C API, so run the full host suite.
+
+**Diffusion cannot be previewed in the viewfinder.** It is spatial, and the preview is a pointwise
+3D LUT. Live preview would need a separate GPU bloom pass rendered BEFORE the LUT lookup, because
+the engine applies camera diffusion to the light BEFORE it reaches the film — getting that order
+backwards would look plausible and be wrong.
+
 ### Next
 
 - Fix the one open issue above.

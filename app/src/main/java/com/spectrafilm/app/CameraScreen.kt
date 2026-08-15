@@ -767,7 +767,10 @@ private fun CameraScreenSupported(
                     grade = filterGrade,
                     open = filterMenuOpen,
                     onToggleMenu = { filterMenuOpen = !filterMenuOpen },
-                    onPick = { filterGrade = it; filterMenuOpen = false },
+                    // Stays OPEN after a pick: choosing a strength is something you compare, so
+                    // closing on every tap would mean reopening to try the next one. The icon is
+                    // the way out.
+                    onPick = { filterGrade = it },
                 )
             }
             if (flash.value > 0f) {
