@@ -546,3 +546,39 @@ same constants, the same way the viewfinder already shares `SpektraParams` with 
 
 It will still be an APPROXIMATION (Gaussian pyramid vs the engine's exact PSF), the same
 relationship the LUT already has with the pointwise pipeline.
+
+### §9b Why diffusion is unusably slow on export — and the fix that already exists
+
+Measured 2026-08-15. Two photos with a filter made the queue appear hung: the service sat at 40%
+CPU and 1.5 GB for hours, and relaunching the app restarted the same job from zero.
+
+**Cause.** `apply_diffusion_filter_um` builds a DENSE (ks x ks) PSF and convolves it directly.
+`radius = ceil(8 * bloom_max_lambda_px)`, and at 12 MP on a 35 mm frame the pixel pitch is 8.75um,
+so the bloom group's 380um lambda is 43px and the radius is **347px**:
+
+    kernel 695 x 695 = 483,025 taps
+    x 12M pixels x 3 channels = 1.7e13 operations
+
+That is days, not hours. It is fine in the editor at preview resolution (a 640px proxy has a ~50um
+pitch, so the radius collapses to ~60px) — which is why it was never noticed. Nothing about it is
+specific to the camera; a full-resolution editor export with diffusion on would hang identically.
+
+**The fix is already ported.** `kernels/exponential_filter` provides `fast_exponential_filter` —
+"2D isotropic exponential via a fixed Gaussian mixture; n_gaussians=3" — a port of upstream's
+`fast_exponential_filter`, and the same machinery halation uses (which is why halation is fast).
+
+The diffusion PSF is `sum_k w_k * exp(-r / lambda_k) / (2*pi*lambda_k^2)` — a sum of exponentials,
+exactly what that kernel evaluates. So the restructure is:
+
+1. drop the dense (ks x ks) kernel build and the direct convolution,
+2. for each lambda in each group, call `fast_exponential_filter` and accumulate weighted,
+3. keep the per-channel halo weights (`halo_channel_weights`) applied to the halo terms.
+
+Cost goes from O(radius^2) per pixel to a handful of separable passes — orders of magnitude.
+
+**Parity note.** No golden covers diffusion (every `.spkvec` golden has it inactive), so the suite
+will not catch a regression here. Gate the change with a new property test: OFF byte-identical, ON
+finite and non-degenerate, and a small image convolved both ways agreeing within tolerance.
+
+**Current state:** the filter is PREVIEW-ONLY. `ProcessingService` deliberately does not apply
+`job.diffusionStrength` — see the comment there. Re-enable it in the same change.

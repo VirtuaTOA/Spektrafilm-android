@@ -285,11 +285,20 @@ class ProcessingService : Service() {
             // Applied AFTER the preset so a filter chosen at the shutter wins over the preset's
             // default. Diffusion is spatial, so it exists only here — the viewfinder's LUT is
             // pointwise and cannot show it.
-            job.diffusionStrength?.let {
-                state.cameraDiffusionState.active = true
-                state.cameraDiffusionState.strength = it
-                job.diffusionFamily?.let { f -> state.cameraDiffusionState.family = f }
-            }
+            // DIFFUSION IS DISABLED ON THE EXPORT, deliberately, until it can be computed at a
+            // sane cost. Measured on device: at 12 MP on a 35 mm frame the pixel pitch is 8.75um,
+            // so the bloom group's 380um sigma is 43px — a ~260-tap separable kernel per axis,
+            // over three groups and three channels. That is ~2e10 operations and takes hours; the
+            // queue appeared hung at 40% CPU and 1.5 GB while it ground away, and relaunching the
+            // app restarted the same job from scratch.
+            //
+            // THE FIX IS DOWNSCALING, not removal: a sigma-43px Gaussian carries no detail above
+            // ~1/43 cycles per pixel, so computing the halo and bloom groups at quarter resolution
+            // and upsampling is visually identical and ~16x cheaper. That is what the GPU preview
+            // effectively does. Until that lands in the engine, the filter is PREVIEW-ONLY and the
+            // exported frame is unfiltered — recorded in docs/CAMERA_PLAN.md §9.
+            @Suppress("UNUSED_EXPRESSION")
+            job.diffusionStrength
             engine.simulate(image, state.toParams())
         } finally {
             image.close()
