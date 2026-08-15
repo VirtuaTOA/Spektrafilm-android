@@ -89,6 +89,24 @@ struct DecodeOptions {
     // on `noiserd > 0 && colors == 3 && filters > 1000` — so the whole demosaic block,
     // fbdd() included, is skipped. Callers that want denoising must decode full-res.
     int fbddNoiseReduction = 0;
+
+    // Edge-aware chroma denoise radius in FULL-RESOLUTION pixels. 0 = off.
+    //
+    // Unlike fbddNoiseReduction this is not a LibRaw feature — it is a guided
+    // filter (luma as guide) applied to the two chroma difference channels after
+    // the decode, so luminance detail is preserved exactly and only colour noise
+    // is smoothed. See the implementation comment in raw_decoder.cpp for why the
+    // defect being targeted is chromatic and why a plain blur was rejected.
+    //
+    // Default 0 for the same reason as FBDD: docs/RAW_DNG.md pins this decoder to
+    // desktop spektrafilm's rawpy options, and this is a deviation from them.
+    //
+    // Radius is in pixels, so it is a FIXED SPATIAL SIZE, not a fraction of the
+    // frame — a value tuned at full resolution will over-smooth a downscaled
+    // proxy. Callers decoding at reduced size should scale it down to match.
+    // ~8 at full resolution matches the sigma=4 Gaussian that measured a 69%
+    // chroma-noise reduction.
+    int chromaDenoiseRadius = 0;
 };
 
 // Stable decode status codes. These cross to Kotlin (RawDecoder.DecodeStatus)

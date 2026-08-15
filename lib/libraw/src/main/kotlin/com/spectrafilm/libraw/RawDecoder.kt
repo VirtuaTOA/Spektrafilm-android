@@ -118,6 +118,20 @@ object RawDecoder {
          * export will see the export as the cleaner of the two.
          */
         val fbddNoiseReduction: Int = 0,
+        /**
+         * Edge-aware chroma denoise radius in FULL-RESOLUTION pixels (0 = off).
+         *
+         * A guided filter over the two chroma difference channels, using luma as the
+         * guide. Luminance is preserved exactly, so sharpness and the film grain the
+         * engine adds downstream are untouched; only colour noise is smoothed.
+         *
+         * Radius is a fixed pixel size, NOT a fraction of the frame — a value tuned at
+         * full resolution over-smooths a downscaled proxy. Scale it with the decode.
+         *
+         * Defaults to 0: like [fbddNoiseReduction] this deviates from the rawpy decode
+         * `docs/RAW_DNG.md` pins this decoder to, so it is opt-in per call.
+         */
+        val chromaDenoiseRadius: Int = 0,
     )
 
     /** Constructed by the native layer (raw_decoder_jni.cpp). */
@@ -146,6 +160,7 @@ object RawDecoder {
         nativeDecodeBytes(
             bytes, settings.whiteBalance.nativeMode, settings.temperatureK, settings.tint,
             settings.halfSize, settings.maxLongEdge, settings.fbddNoiseReduction,
+            settings.chromaDenoiseRadius,
         ).toLinear()
 
     /**
@@ -163,6 +178,7 @@ object RawDecoder {
             direct, direct.remaining(),
             settings.whiteBalance.nativeMode, settings.temperatureK, settings.tint,
             settings.halfSize, settings.maxLongEdge, settings.fbddNoiseReduction,
+            settings.chromaDenoiseRadius,
         ).toLinear()
     }
 
@@ -174,6 +190,7 @@ object RawDecoder {
         nativeDecodeFd(
             fd, settings.whiteBalance.nativeMode, settings.temperatureK, settings.tint,
             settings.halfSize, settings.maxLongEdge, settings.fbddNoiseReduction,
+            settings.chromaDenoiseRadius,
         ).toLinear()
 
     /** Decode by reading an InputStream fully into memory (SAF convenience). */
@@ -256,16 +273,19 @@ object RawDecoder {
     private external fun nativeDecodeBytes(
         bytes: ByteArray, wbMode: Int, temperatureK: Double, tint: Double,
         halfSize: Boolean, maxLongEdge: Int, fbddNoiseReduction: Int,
+        chromaDenoiseRadius: Int,
     ): NativeResult
 
     private external fun nativeDecodeBuffer(
         buffer: ByteBuffer, len: Int, wbMode: Int, temperatureK: Double, tint: Double,
         halfSize: Boolean, maxLongEdge: Int, fbddNoiseReduction: Int,
+        chromaDenoiseRadius: Int,
     ): NativeResult
 
     private external fun nativeDecodeFd(
         fd: Int, wbMode: Int, temperatureK: Double, tint: Double,
         halfSize: Boolean, maxLongEdge: Int, fbddNoiseReduction: Int,
+        chromaDenoiseRadius: Int,
     ): NativeResult
 
     /** Free a native (malloc + NewDirectByteBuffer) result buffer (see [freeOffHeap]). */

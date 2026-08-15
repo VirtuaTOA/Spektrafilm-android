@@ -474,6 +474,144 @@ void applyAcesAdaptation(float* rgb, size_t pixelCount, const DecodeOptions& opt
     }
 }
 
+// ---------------------------------------------------------------------------
+// Edge-aware chroma denoise (fast guided filter, He et al. 2010).
+//
+// WHY CHROMA ONLY: measured on this project's own captures, in structurally flat
+// patches where every bit of variation is genuinely noise, the blue-yellow chroma
+// noise is LARGER than the luminance noise (sigma 89.3 vs 81.3 in 16-bit codes;
+// red-green 39.0). Human vision resolves colour detail poorly, so chroma can be
+// smoothed hard with no perceived loss of sharpness — and because this only ever
+// writes the two chroma difference channels, luminance detail is preserved
+// exactly, not approximately. That matters here specifically: the engine adds
+// film grain downstream, and flattening the luminance floor before re-adding
+// synthetic grain is what makes a film simulation read as plastic.
+//
+// WHY GUIDED RATHER THAN A PLAIN BLUR: a plain Gaussian on chroma measured a 69%
+// chroma-noise cut but visibly bled colour across high-contrast edges (a green/
+// yellow halo along a backlit leaf boundary). The guided filter uses luma as the
+// guide, so smoothing stops where luma has real structure.
+//
+// WHY THE SUBSAMPLED ("fast") FORM: the a/b coefficient fields are smooth by
+// construction, so they are solved at 1/4 linear scale and bilinearly upsampled.
+// That drops the working set to ~1/16 (a 12 MP frame needs ~30 MB of scratch
+// instead of ~500 MB, which would OOM alongside the decode buffer) and makes the
+// filter O(1) per pixel in the radius. Luma is recomputed from rgb on the fly
+// rather than stored, so there is no full-resolution scratch plane at all.
+constexpr float kYR = 0.2126f, kYG = 0.7152f, kYB = 0.0722f;
+
+// Separable box mean, radius r, via double prefix sums (exact at any radius and
+// numerically safe over millions of samples, unlike a running float accumulator).
+void boxMean(const std::vector<float>& src, std::vector<float>& dst,
+             int w, int h, int r, std::vector<float>& tmp) {
+    tmp.resize(src.size());
+    dst.resize(src.size());
+    std::vector<double> pre(static_cast<size_t>(std::max(w, h)) + 1);
+    for (int y = 0; y < h; ++y) {
+        const float* s = &src[static_cast<size_t>(y) * w];
+        float* d = &tmp[static_cast<size_t>(y) * w];
+        pre[0] = 0.0;
+        for (int x = 0; x < w; ++x) pre[x + 1] = pre[x] + s[x];
+        for (int x = 0; x < w; ++x) {
+            const int lo = std::max(0, x - r), hi = std::min(w - 1, x + r);
+            d[x] = static_cast<float>((pre[hi + 1] - pre[lo]) / (hi - lo + 1));
+        }
+    }
+    for (int x = 0; x < w; ++x) {
+        pre[0] = 0.0;
+        for (int y = 0; y < h; ++y) pre[y + 1] = pre[y] + tmp[static_cast<size_t>(y) * w + x];
+        for (int y = 0; y < h; ++y) {
+            const int lo = std::max(0, y - r), hi = std::min(h - 1, y + r);
+            dst[static_cast<size_t>(y) * w + x] =
+                static_cast<float>((pre[hi + 1] - pre[lo]) / (hi - lo + 1));
+        }
+    }
+}
+
+// `radius` is in full-resolution pixels; `eps` is in (normalized luma)^2 and sets
+// how much luma variation counts as an edge rather than noise.
+void chromaDenoiseGuided(std::vector<float>& rgb, int W, int H, int radius, float eps) {
+    if (radius <= 0 || W < 16 || H < 16) return;
+    constexpr int kSub = 4;
+    const int sw = std::max(4, W / kSub), sh = std::max(4, H / kSub);
+    const int rs = std::max(1, radius / kSub);
+    const size_t n = static_cast<size_t>(sw) * sh;
+
+    std::vector<float> I(n), Pr(n), Pb(n);
+    for (int y = 0; y < sh; ++y) {
+        for (int x = 0; x < sw; ++x) {
+            double ay = 0, ar = 0, ab = 0;
+            int cnt = 0;
+            for (int j = 0; j < kSub; ++j) {
+                const int yy = std::min(H - 1, y * kSub + j);
+                for (int i = 0; i < kSub; ++i) {
+                    const int xx = std::min(W - 1, x * kSub + i);
+                    const size_t k = (static_cast<size_t>(yy) * W + xx) * 3;
+                    const float R = rgb[k], G = rgb[k + 1], B = rgb[k + 2];
+                    const float Y = kYR * R + kYG * G + kYB * B;
+                    ay += Y; ar += R - Y; ab += B - Y; ++cnt;
+                }
+            }
+            const size_t o = static_cast<size_t>(y) * sw + x;
+            I[o]  = static_cast<float>(ay / cnt);
+            Pr[o] = static_cast<float>(ar / cnt);
+            Pb[o] = static_cast<float>(ab / cnt);
+        }
+    }
+
+    std::vector<float> tmp, scratch(n), mI, mII, mP, mIP, A(n), Bc(n), Ar, Br, Ab, Bb;
+    boxMean(I, mI, sw, sh, rs, tmp);
+    for (size_t i = 0; i < n; ++i) scratch[i] = I[i] * I[i];
+    boxMean(scratch, mII, sw, sh, rs, tmp);
+    for (size_t i = 0; i < n; ++i) mII[i] -= mI[i] * mI[i];   // -> var(I)
+
+    auto solve = [&](const std::vector<float>& P,
+                     std::vector<float>& outA, std::vector<float>& outB) {
+        boxMean(P, mP, sw, sh, rs, tmp);
+        for (size_t i = 0; i < n; ++i) scratch[i] = I[i] * P[i];
+        boxMean(scratch, mIP, sw, sh, rs, tmp);
+        for (size_t i = 0; i < n; ++i) {
+            const float cov = mIP[i] - mI[i] * mP[i];
+            const float a = cov / (mII[i] + eps);
+            A[i] = a;
+            Bc[i] = mP[i] - a * mI[i];
+        }
+        boxMean(A, outA, sw, sh, rs, tmp);
+        boxMean(Bc, outB, sw, sh, rs, tmp);
+    };
+    solve(Pr, Ar, Br);
+    solve(Pb, Ab, Bb);
+
+    for (int y = 0; y < H; ++y) {
+        const float fy = std::min(std::max(static_cast<float>(y) / kSub - 0.5f, 0.0f),
+                                  static_cast<float>(sh - 1));
+        const int y0 = static_cast<int>(fy), y1 = std::min(y0 + 1, sh - 1);
+        const float wy = fy - y0;
+        for (int x = 0; x < W; ++x) {
+            const float fx = std::min(std::max(static_cast<float>(x) / kSub - 0.5f, 0.0f),
+                                      static_cast<float>(sw - 1));
+            const int x0 = static_cast<int>(fx), x1 = std::min(x0 + 1, sw - 1);
+            const float wx = fx - x0;
+            const size_t i00 = static_cast<size_t>(y0) * sw, i10 = static_cast<size_t>(y1) * sw;
+            auto lerp2 = [&](const std::vector<float>& M) {
+                const float t = M[i00 + x0] * (1 - wx) + M[i00 + x1] * wx;
+                const float b = M[i10 + x0] * (1 - wx) + M[i10 + x1] * wx;
+                return t * (1 - wy) + b * wy;
+            };
+            const size_t k = (static_cast<size_t>(y) * W + x) * 3;
+            const float R = rgb[k], G = rgb[k + 1], B = rgb[k + 2];
+            const float Y = kYR * R + kYG * G + kYB * B;
+            const float nR = Y + (lerp2(Ar) * Y + lerp2(Br));
+            const float nB = Y + (lerp2(Ab) * Y + lerp2(Bb));
+            // Reconstruct green so luma is preserved EXACTLY: the filter moves only
+            // the two chroma differences, never Y.
+            rgb[k]     = nR;
+            rgb[k + 1] = (Y - kYR * nR - kYB * nB) / kYG;
+            rgb[k + 2] = nB;
+        }
+    }
+}
+
 // Run unpack + dcraw_process + dcraw_make_mem_image and copy the 16-bit linear RGB
 // into a normalized float result (value / 65535), matching the Python:
 //   rgb = raw.postprocess(...).astype(float32) / 65535.0
@@ -570,6 +708,19 @@ DecodeResult finishDecode(LibRaw& raw, const DecodeOptions& options,
         }
     }
     LibRaw::dcraw_clear_mem(img);
+
+    // Edge-aware chroma denoise, before the ACES adaptation and the ProPhoto
+    // conversion — i.e. on exactly the linear ACES data the noise measurements
+    // above were taken on. Off (radius 0) unless the caller opts in.
+    //
+    // eps is in (normalized luma)^2. The measured luma noise floor on a real
+    // capture is ~81/65535 = 0.00124, so 0.004^2 treats luma swings under about
+    // 3x the noise floor as noise (smooth the chroma there) and anything above it
+    // as a real edge (leave the chroma alone).
+    if (options.chromaDenoiseRadius > 0) {
+        constexpr float kChromaEdgeEps = 0.004f * 0.004f;
+        chromaDenoiseGuided(result.rgb, ow, oh, options.chromaDenoiseRadius, kChromaEdgeEps);
+    }
 
     applyAcesAdaptation(result.rgb.data(), static_cast<size_t>(ow) * oh, options);
 

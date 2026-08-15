@@ -30,7 +30,7 @@ namespace {
 
 spectrafilm::DecodeOptions readOptions(jint wbMode, jdouble temperatureK, jdouble tint,
                                        jboolean halfSize, jint maxLongEdge,
-                                       jint fbddNoiseReduction) {
+                                       jint fbddNoiseReduction, jint chromaDenoiseRadius) {
     spectrafilm::DecodeOptions opts;
     // Must match RawDecoder.WhiteBalance.nativeMode ordinals in Kotlin.
     switch (wbMode) {
@@ -52,6 +52,8 @@ spectrafilm::DecodeOptions readOptions(jint wbMode, jdouble temperatureK, jdoubl
     // Inert on half-size decodes (see DecodeOptions::fbddNoiseReduction).
     opts.fbddNoiseReduction =
         fbddNoiseReduction < 0 ? 0 : (fbddNoiseReduction > 2 ? 2 : fbddNoiseReduction);
+    // Edge-aware chroma denoise radius in full-res pixels; negatives coerced to off.
+    opts.chromaDenoiseRadius = chromaDenoiseRadius > 0 ? chromaDenoiseRadius : 0;
     return opts;
 }
 
@@ -173,7 +175,7 @@ JNI(void, nativeFree)(JNIEnv* env, jobject /*thiz*/, jobject buf) {
 JNI(jobject, nativeDecodeBytes)(JNIEnv* env, jobject /*thiz*/, jbyteArray bytes,
                                 jint wbMode, jdouble temperatureK, jdouble tint,
                                 jboolean halfSize, jint maxLongEdge,
-                                jint fbddNoiseReduction) {
+                                jint fbddNoiseReduction, jint chromaDenoiseRadius) {
     if (bytes == nullptr) {
         jclass ise = env->FindClass("java/lang/IllegalArgumentException");
         env->ThrowNew(ise, "null RAW byte[]");
@@ -183,7 +185,7 @@ JNI(jobject, nativeDecodeBytes)(JNIEnv* env, jobject /*thiz*/, jbyteArray bytes,
     jbyte* ptr = env->GetByteArrayElements(bytes, nullptr);
     spectrafilm::DecodeResult result = spectrafilm::decodeFromBuffer(
         reinterpret_cast<const uint8_t*>(ptr), static_cast<size_t>(len),
-        readOptions(wbMode, temperatureK, tint, halfSize, maxLongEdge, fbddNoiseReduction));
+        readOptions(wbMode, temperatureK, tint, halfSize, maxLongEdge, fbddNoiseReduction, chromaDenoiseRadius));
     env->ReleaseByteArrayElements(bytes, ptr, JNI_ABORT);
     return toJavaResult(env, result);
 }
@@ -196,7 +198,7 @@ JNI(jobject, nativeDecodeBytes)(JNIEnv* env, jobject /*thiz*/, jbyteArray bytes,
 JNI(jobject, nativeDecodeBuffer)(JNIEnv* env, jobject /*thiz*/, jobject directBuf,
                                  jint len, jint wbMode, jdouble temperatureK, jdouble tint,
                                  jboolean halfSize, jint maxLongEdge,
-                                 jint fbddNoiseReduction) {
+                                 jint fbddNoiseReduction, jint chromaDenoiseRadius) {
     void* addr = (directBuf != nullptr) ? env->GetDirectBufferAddress(directBuf) : nullptr;
     if (addr == nullptr) {
         jclass ise = env->FindClass("java/lang/IllegalArgumentException");
@@ -205,7 +207,7 @@ JNI(jobject, nativeDecodeBuffer)(JNIEnv* env, jobject /*thiz*/, jobject directBu
     }
     spectrafilm::DecodeResult result = spectrafilm::decodeFromBuffer(
         reinterpret_cast<const uint8_t*>(addr), static_cast<size_t>(len),
-        readOptions(wbMode, temperatureK, tint, halfSize, maxLongEdge, fbddNoiseReduction));
+        readOptions(wbMode, temperatureK, tint, halfSize, maxLongEdge, fbddNoiseReduction, chromaDenoiseRadius));
     return toJavaResult(env, result);
 }
 
@@ -217,8 +219,8 @@ JNI(jobject, nativeDecodeBuffer)(JNIEnv* env, jobject /*thiz*/, jobject directBu
 JNI(jobject, nativeDecodeFd)(JNIEnv* env, jobject /*thiz*/, jint fd,
                              jint wbMode, jdouble temperatureK, jdouble tint,
                              jboolean halfSize, jint maxLongEdge,
-                             jint fbddNoiseReduction) {
+                             jint fbddNoiseReduction, jint chromaDenoiseRadius) {
     spectrafilm::DecodeResult result = spectrafilm::decodeFromFd(
-        fd, readOptions(wbMode, temperatureK, tint, halfSize, maxLongEdge, fbddNoiseReduction));
+        fd, readOptions(wbMode, temperatureK, tint, halfSize, maxLongEdge, fbddNoiseReduction, chromaDenoiseRadius));
     return toJavaResult(env, result);
 }

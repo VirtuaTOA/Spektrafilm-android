@@ -94,6 +94,12 @@ fun decodeRawToLinear(
      * RawDecoder.Settings.fbddNoiseReduction.
      */
     fbddNoiseReduction: Int = 0,
+    /**
+     * Edge-aware chroma denoise radius in output pixels, 0 = off. Guided filter over the
+     * chroma difference channels only — luminance detail is preserved exactly. ~8 at full
+     * capture resolution; see RawDecoder.Settings.chromaDenoiseRadius.
+     */
+    chromaDenoiseRadius: Int = 0,
 ): LinearImage {
     // Issue #7 mitigation: even with the fd decode (no full-file Java byte[]), LibRaw
     // still expands the RAW to a float32 buffer (12 bytes/px) natively. For preview-scale
@@ -107,6 +113,7 @@ fun decodeRawToLinear(
         try {
             return decodeRawAtEdge(
                 ctx, uri, wb, temperatureK, tint, attemptEdge, halfSize, fbddNoiseReduction,
+                chromaDenoiseRadius,
             )
         } catch (oom: OutOfMemoryError) {
             // Encourage the collector to reclaim the failed transient before retrying.
@@ -180,6 +187,7 @@ private fun decodeRawAtEdge(
     maxEdge: Int,
     halfSize: Boolean,
     fbddNoiseReduction: Int,
+    chromaDenoiseRadius: Int,
 ): LinearImage {
     val settings = RawDecoder.Settings(
         whiteBalance = wb, temperatureK = temperatureK, tint = tint, halfSize = halfSize,
@@ -187,6 +195,10 @@ private fun decodeRawAtEdge(
         // halfSize is true (LibRaw skips the demosaic block, and fbdd() is inside it) —
         // including when the OOM ladder below silently flips halfSize on.
         fbddNoiseReduction = fbddNoiseReduction,
+        // Chroma denoise DOES still run on a half-size decode (it is our own filter, applied
+        // after LibRaw). But its radius is in output pixels, so a half-size result would get
+        // twice the relative smoothing — halve it to keep the spatial scale constant.
+        chromaDenoiseRadius = if (halfSize) chromaDenoiseRadius / 2 else chromaDenoiseRadius,
         // Hard cap the NATIVE decode to the target edge: some DNGs ignore LibRaw half_size
         // and decode full-resolution, and the result's direct ByteBuffer is a managed
         // byte[] on Android — a 4080x3060 buffer is ~150 MB and OOMs the ART heap. With

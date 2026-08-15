@@ -310,6 +310,14 @@ class ProcessingService : Service() {
             // are half-size, where FBDD cannot run anyway, so enabling it there would make
             // previews and exports disagree.
             fbddNoiseReduction = 1,
+            // Edge-aware chroma denoise. This is the one aimed squarely at the defect:
+            // measured in structurally flat patches of a real capture, where all variation
+            // really is noise, blue-yellow chroma noise (sigma 89.3) is LARGER than the
+            // luminance noise (81.3). A guided filter at this radius cut chroma noise ~69%
+            // while leaving luminance untouched — about 3x what FBDD manages, and unlike
+            // FBDD it costs no sharpness at all, so the film grain still has texture to
+            // sit on. 8 full-res pixels matches the sigma=4 Gaussian that was measured.
+            chromaDenoiseRadius = 8,
         )
         val result = try {
             // Applied AFTER the preset so a filter chosen at the shutter wins over the preset's
