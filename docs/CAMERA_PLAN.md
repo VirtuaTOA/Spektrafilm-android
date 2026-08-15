@@ -576,9 +576,25 @@ exactly what that kernel evaluates. So the restructure is:
 
 Cost goes from O(radius^2) per pixel to a handful of separable passes — orders of magnitude.
 
-**Parity note.** No golden covers diffusion (every `.spkvec` golden has it inactive), so the suite
-will not catch a regression here. Gate the change with a new property test: OFF byte-identical, ON
-finite and non-degenerate, and a small image convolved both ways agreeing within tolerance.
+**PARITY NOTE — CORRECTED, AND THIS IS THE POINT.** An earlier draft of this section claimed no
+golden covered diffusion. THAT WAS WRONG. `test_diffusion` and `test_diffusion_e2e` gate it
+directly, and they CAUGHT the swap when it was attempted on 2026-08-15:
+
+    [diffusion_bpm]  max_abs 3.72e-01 (tol 1e-04)  rms 1.88e-02 (tol 1e-05)
+    [diffusion_e2e]  film_log_raw max_abs 1.33e+00, film_density_cmy 3.69e-01, final_rgb 2.22e-01
+
+`fast_exponential_filter` is a 3-GAUSSIAN FIT to the exponential (amplitudes 0.1633/0.6496/0.1870,
+sum 0.9999) — a surrogate, not the same function. The dense convolution is what the oracle does, so
+swapping it breaks bit-exactness by ~0.37 in density. The attempt was reverted.
+
+**Therefore the fast path cannot simply replace the exact one.** It must ship the way every other
+engine feature here does: OPT-IN, DEFAULT OFF, so the default path stays byte-identical and the
+goldens keep passing. Add e.g. `camera_diffusion_fast` to spk_params, use the surrogate only when
+set, and have the CAMERA set it while the editor keeps the exact path. Gate it with a property test
+(fast vs exact within a loose tolerance, and fast much quicker), not a golden.
+
+The alternative worth considering is an FFT convolution, which would be exact to float error and so
+could stay on by default — more work, but it removes the fast/exact split entirely.
 
 **Current state:** the filter is PREVIEW-ONLY. `ProcessingService` deliberately does not apply
 `job.diffusionStrength` — see the comment there. Re-enable it in the same change.
