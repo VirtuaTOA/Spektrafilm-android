@@ -55,6 +55,8 @@ data class CaptureJob(
      *  params from the preset id alone — a filter chosen in the viewfinder would otherwise never
      *  reach the export. */
     val diffusionStrength: Float? = null,
+    /** Diffusion family id ("cinebloom" etc). Null keeps the preset's own. */
+    val diffusionFamily: String? = null,
 ) {
     fun toJson(): JSONObject = JSONObject()
         .put("dng", dngPath)
@@ -64,6 +66,7 @@ data class CaptureJob(
         .put("equivFocalMm", equivFocalMm ?: JSONObject.NULL)
         .put("shutterNs", shutterNs ?: JSONObject.NULL)
         .put("diffusion", diffusionStrength?.toDouble() ?: JSONObject.NULL)
+        .put("diffusionFamily", diffusionFamily ?: JSONObject.NULL)
 
     companion object {
         fun fromJson(o: JSONObject): CaptureJob? {
@@ -76,6 +79,8 @@ data class CaptureJob(
                 equivFocalMm = o.optInt("equivFocalMm", -1).takeIf { it > 0 },
                 shutterNs = o.optLong("shutterNs", -1L).takeIf { it > 0L },
                 diffusionStrength = o.optDouble("diffusion", -1.0).takeIf { it > 0.0 }?.toFloat(),
+                diffusionFamily = o.optString("diffusionFamily")
+                    .takeIf { it.isNotBlank() && it != "null" },
             )
         }
     }
@@ -283,6 +288,7 @@ class ProcessingService : Service() {
             job.diffusionStrength?.let {
                 state.cameraDiffusionState.active = true
                 state.cameraDiffusionState.strength = it
+                job.diffusionFamily?.let { f -> state.cameraDiffusionState.family = f }
             }
             engine.simulate(image, state.toParams())
         } finally {

@@ -132,6 +132,10 @@ typedef struct {
     int32_t camera_balance_to_illuminant;  /* bool */
     /* camera diffusion filter (Black Pro-Mist family) */
     int32_t camera_diffusion_active;  /* bool */
+    /* Diffusion filter family. 0 = schema default (black_pro_mist), so a zeroed struct is
+       byte-identical to the pre-feature build; 1=glimmerglass 2=black_pro_mist 3=pro_mist
+       4=cinebloom. NOT the raw DiffusionFamily enum, whose 0 is Glimmerglass. */
+    int32_t camera_diffusion_family;
     float camera_diffusion_strength;
     float camera_diffusion_spatial_scale;
     float camera_diffusion_halo_warmth;

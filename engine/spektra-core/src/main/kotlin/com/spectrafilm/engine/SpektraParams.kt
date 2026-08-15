@@ -166,7 +166,23 @@ data class DiffusionFilterParams(
     val haloSize: Float = 1.0f,
     val bloomIntensity: Float = 1.0f,
     val bloomSize: Float = 1.0f,
-)
+) {
+    /**
+     * [filterFamily] as an int for the C API, which cannot take a string here.
+     *
+     * ZERO MEANS "SCHEMA DEFAULT", deliberately: DiffusionFamily::kGlimmerglass is 0 in the C++
+     * enum, so a zero-initialised spk_params would otherwise silently select Glimmerglass and
+     * change the default render. Offsetting by one keeps a zeroed struct byte-identical.
+     */
+    val familyCode: Int
+        get() = when (filterFamily) {
+            "glimmerglass" -> 1
+            "black_pro_mist" -> 2
+            "pro_mist" -> 3
+            "cinebloom" -> 4
+            else -> 0
+        }
+}
 
 data class FilmRenderingParams(
     val densityCurveGamma: Float = 1.0f,

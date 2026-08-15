@@ -795,7 +795,14 @@ void apply_user_grain(spk::GrainParams& g, const spk_params* p) {
 // camera (filming) vs enlarger (printing) field group.
 void apply_user_diffusion_filter(spk::DiffusionFilterParams& d,
                                  const spk_params* p, bool is_camera) {
-    d.family = spk::DiffusionFamily::kBlackProMist;  // schema default family.
+    // 0 (and 2) -> the schema default. See spektra.h: the offset exists so a zeroed struct does
+    // not select Glimmerglass, which is enum value 0.
+    switch (is_camera ? p->camera_diffusion_family : 0) {
+        case 1: d.family = spk::DiffusionFamily::kGlimmerglass; break;
+        case 3: d.family = spk::DiffusionFamily::kProMist; break;
+        case 4: d.family = spk::DiffusionFamily::kCinebloom; break;
+        default: d.family = spk::DiffusionFamily::kBlackProMist; break;
+    }
     if (is_camera) {
         d.active = (p->camera_diffusion_active != 0);
         d.strength = p->camera_diffusion_strength;
@@ -1607,7 +1614,8 @@ void spk_default_params(spk_params* p) {
     p->auto_exposure_method = nullptr;
     p->lens_blur_um = 0.0f;
     p->film_format_mm = 35.0f;
-    p->camera_balance_to_illuminant = 0;   /* opt-in: authentic film balance by default */
+    p->camera_balance_to_illuminant = 0;
+    p->camera_diffusion_family = 0;   /* schema default */   /* opt-in: authentic film balance by default */
     p->camera_filter_uv[0] = 0.0f; p->camera_filter_uv[1] = 410.0f; p->camera_filter_uv[2] = 8.0f;
     p->camera_filter_ir[0] = 0.0f; p->camera_filter_ir[1] = 675.0f; p->camera_filter_ir[2] = 15.0f;
     p->camera_diffusion_active = 0;

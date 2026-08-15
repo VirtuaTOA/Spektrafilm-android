@@ -288,6 +288,7 @@ bool marshal_params(JNIEnv* env, jobject params, spk_params* out, ParamStorage* 
             call_bool(env, camera, "getBalanceToIlluminant") ? 1 : 0;
         jobject df = call_obj(env, camera, "getDiffusionFilter",
             "()Lcom/spectrafilm/engine/DiffusionFilterParams;");
+        out->camera_diffusion_family = call_int(env, df, "getFamilyCode");
         read_diffusion_filter(env, df, &out->camera_diffusion_active,
             &out->camera_diffusion_strength, &out->camera_diffusion_spatial_scale,
             &out->camera_diffusion_halo_warmth, &out->camera_diffusion_core_intensity,

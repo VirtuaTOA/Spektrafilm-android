@@ -161,6 +161,13 @@ private val SHUTTER_DIAMETER = 70.dp
  * during the render, alongside grain and halation, which are invisible in the finder for the same
  * reason.
  */
+private val FILTER_FAMILIES: List<Pair<String, String>> = listOf(
+    "GLIMMERGLASS" to "glimmerglass",
+    "BLACK PRO-MIST" to "black_pro_mist",
+    "PRO-MIST" to "pro_mist",
+    "CINEBLOOM" to "cinebloom",
+)
+
 private val FILTER_GRADES: List<Pair<String, Float?>> = listOf(
     "NONE" to null,
     "1/8" to 0.125f,
@@ -320,6 +327,7 @@ private fun CameraScreenSupported(
     // shooting, not transient UI state.
     var filterGrade by rememberSaveable { mutableIntStateOf(0) }
     var filterMenuOpen by remember { mutableStateOf(false) }
+    var filterFamily by rememberSaveable { mutableIntStateOf(1) }   // black_pro_mist
     var canCapture by remember(lens) { mutableStateOf(false) }
 
     // MediaActionSound, not a bundled asset: it is the platform shutter click, and using it
@@ -668,6 +676,7 @@ private fun CameraScreenSupported(
                                 equivFocalMm = lens.equivFocalMm,
                                 shutterNs = session.lastExposureNs,
                                 diffusionStrength = FILTER_GRADES[filterGrade].second,
+                                diffusionFamily = FILTER_FAMILIES[filterFamily].second,
                             ),
                         )
                         scope.launch {
@@ -765,12 +774,14 @@ private fun CameraScreenSupported(
             Box(Modifier.align(Alignment.BottomEnd).padding(TOGGLE_INSET)) {
                 FilterControl(
                     grade = filterGrade,
+                    family = filterFamily,
                     open = filterMenuOpen,
                     onToggleMenu = { filterMenuOpen = !filterMenuOpen },
                     // Stays OPEN after a pick: choosing a strength is something you compare, so
                     // closing on every tap would mean reopening to try the next one. The icon is
                     // the way out.
                     onPick = { filterGrade = it },
+                    onCycleFamily = { filterFamily = (filterFamily + 1) % FILTER_FAMILIES.size },
                 )
             }
             if (flash.value > 0f) {
@@ -1128,9 +1139,11 @@ private fun LensChip(label: String, selected: Boolean, onClick: () -> Unit) {
 @Composable
 private fun FilterControl(
     grade: Int,
+    family: Int,
     open: Boolean,
     onToggleMenu: () -> Unit,
     onPick: (Int) -> Unit,
+    onCycleFamily: () -> Unit,
 ) {
     Column(horizontalAlignment = Alignment.End) {
         if (open) {
@@ -1149,23 +1162,48 @@ private fun FilterControl(
                 )
             }
         }
-        Box(
-            Modifier.size(26.dp).clip(RoundedCornerShape(13.dp)).clickable { onToggleMenu() },
-            contentAlignment = Alignment.Center,
-        ) {
-            val tint = if (grade > 0) SELECTED else UNSELECTED
-            Canvas(Modifier.size(18.dp)) {
-                val r = size.minDimension / 2f
-                // A filter ring: outer rim, inner glass, and a diagonal catch-light.
-                drawCircle(tint, radius = r - 1.dp.toPx(), style = Stroke(width = 1.4.dp.toPx()))
-                drawCircle(tint.copy(alpha = 0.55f), radius = r - 5.dp.toPx(),
-                    style = Stroke(width = 1.dp.toPx()))
-                drawLine(
-                    tint.copy(alpha = 0.75f),
-                    start = androidx.compose.ui.geometry.Offset(r * 0.55f, r * 1.35f),
-                    end = androidx.compose.ui.geometry.Offset(r * 1.35f, r * 0.55f),
-                    strokeWidth = 1.dp.toPx(),
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            // The FAMILY, to the left of the icon, only once the menu is open. Tapping it cycles
+            // — four names would not fit as a list beside a 26dp glyph, and the grades already
+            // occupy the vertical space.
+            if (open) {
+                Text(
+                    FILTER_FAMILIES[family].first,
+                    style = readoutTextStyle().copy(
+                        fontSize = 9.sp,
+                        fontWeight = FontWeight.Light,
+                    ),
+                    color = SELECTED,
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(8.dp))
+                        .clickable { onCycleFamily() }
+                        .padding(horizontal = 8.dp, vertical = 3.dp),
                 )
+            }
+            Box(
+                Modifier.size(26.dp).clip(RoundedCornerShape(13.dp)).clickable { onToggleMenu() },
+                contentAlignment = Alignment.Center,
+            ) {
+                val tint = if (grade > 0) SELECTED else UNSELECTED
+                Canvas(Modifier.size(18.dp)) {
+                    val r = size.minDimension / 2f
+                    val c = androidx.compose.ui.geometry.Offset(r, r)
+                    drawCircle(tint, radius = r - 1.dp.toPx(), style = Stroke(width = 1.4.dp.toPx()))
+                    // Evenly spaced chords across the glass. Each line's half-width is the chord
+                    // at that height, so they meet the rim instead of overrunning it.
+                    val rr = r - 1.dp.toPx()
+                    val n = 4
+                    for (i in 1..n) {
+                        val dy = rr * (2f * i / (n + 1f) - 1f)
+                        val half = kotlin.math.sqrt((rr * rr - dy * dy).coerceAtLeast(0f))
+                        drawLine(
+                            tint.copy(alpha = 0.8f),
+                            start = androidx.compose.ui.geometry.Offset(c.x - half, c.y + dy),
+                            end = androidx.compose.ui.geometry.Offset(c.x + half, c.y + dy),
+                            strokeWidth = 1.dp.toPx(),
+                        )
+                    }
+                }
             }
         }
     }
