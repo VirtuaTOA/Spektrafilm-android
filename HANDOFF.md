@@ -138,6 +138,39 @@ Changing any ONE of these constants can move the others; they are not independen
 - **The render indicator is an overlay.** As a row inside the controls column it resized the column
   on every capture, and since the viewfinder takes the leftover space, the frame moved each shot.
 
+### Gallery + capture metadata (2026-08-12, later session)
+
+In-app gallery: `Gallery.kt` (MediaStore, `Pictures/Spektrafilm`) + `GalleryScreen.kt`, reached
+from a preview button beside the shutter. An **overlay, not a Screen** — as a Screen it replaced
+`CameraScreen`, Compose disposed and rebuilt it, and reopening the camera device left the
+viewfinder black behind the transition.
+
+Opening expands the tapped square (button or grid cell) via one shared `ExpandingPhoto`; closing
+slides, both levels, driven by `PredictiveBackHandler`. Photos carry EXIF written at capture:
+stock + 35mm-equivalent focal from `CaptureJob` (UI decisions, not sensor facts), exposure from
+`CameraSession.lastExposureNs`. Reading exposure back out of the DNG did NOT work — do not retry.
+
+**Bugs worth not repeating** (all cost a round trip each):
+
+- **`${'$'}{'${'$'}'}` in Kotlin emits a LITERAL dollar.** Introduced TWICE by writing files through a
+  script and "escaping" interpolation that never needed it. Broke a cache key (every photo shared
+  one slot, so swiping showed the previous photo) and later three metadata strings. Silent wrong
+  values, never a compile error.
+- **Over-eager gesture consumption, twice.** `detectTransformGestures` consumes every drag
+  including one-finger, so the pager never saw a swipe. Then the hand-rolled replacement claimed
+  every event whenever zoomed, so double-tap-to-zoom-out died. Consume only a pinch, or a drag
+  past slop.
+- **Cross-fading two copies of the same image DIMS** to ~75% at the midpoint. Swap instantly
+  instead; a one-entry full-decode cache makes both sides the same bitmap.
+- **`CaptureQueue.pending()` ran on the MAIN thread every 1.5s** (file stat + full read + JSON
+  parse, `@Synchronized`). Pre-dated the gallery. Fixing it took the composition phase from 6.05ms
+  at the 90th percentile to 0.01ms.
+
+**Measure, do not infer.** Three speculative jank fixes (cache eviction, decode concurrency,
+`loadThumbnail`) were all wrong; `dumpsys gfxinfo <pkg> framestats` phase breakdown found the real
+cause in one go. Note gfxinfo percentiles are frame WORK time, not presentation rate. The camera
+preview at 30fps also pins a 120Hz panel to 60 — hence `pausePreview()` while covered.
+
 ### Next
 
 - Fix the one open issue above.
