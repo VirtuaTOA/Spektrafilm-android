@@ -598,3 +598,31 @@ could stay on by default — more work, but it removes the fast/exact split enti
 
 **Current state:** the filter is PREVIEW-ONLY. `ProcessingService` deliberately does not apply
 `job.diffusionStrength` — see the comment there. Re-enable it in the same change.
+
+### §9c THE ACTUAL CAUSE: the port swapped FFT convolution for the textbook definition
+
+Settled 2026-08-15, after the user pointed out that desktop spektrafilm renders a 16 MP ORF with
+diffusion in ~5 SECONDS on an M2 Air. A 2600x gap is not hardware, and that observation is what
+found this.
+
+`model/diffusion.h:22` states it outright:
+
+    the oracle uses scipy.signal.fftconvolve (mode='same') ... a direct double-precision spatial
+    convolution is numerically equivalent (verified |delta| ~ 1e-16 vs the oracle, far under the
+    1e-4 / 1e-5 parity tolerance), so this port uses a direct convolution in double precision and
+    needs no FFT infrastructure.
+
+So THE MATHS IS CORRECT and the port is faithful. The porter deliberately traded speed for avoiding
+FFT machinery — sound at PREVIEW resolution, which is all the editor ever exercised: a 640px proxy
+gives radius ~60px, a ~14k-tap kernel, well under a second. The camera is the first thing to run
+diffusion at full resolution, where radius scales with resolution and cost scales with its SQUARE.
+640px -> 4080px is ~6.4x the radius and ~40x the pixels: about 1600x the work.
+
+**Therefore the fix is to finish the port, not to approximate it.** Implement FFT convolution
+(overlap-add tiled, to bound memory against the pipeline's ~1.5 GB peak) and it will reproduce the
+goldens — the note above guarantees direct and FFT agree to 1e-16, which is four orders inside the
+tolerance. No opt-in flag, no divergence between camera and editor, and it fixes the editor's own
+full-resolution export, which hangs identically today.
+
+**DO NOT take the surrogate route** (§9b). fast_exponential_filter is a 3-Gaussian FIT — it changes
+the mathematics, which is exactly why test_diffusion rejected it at max_abs 0.37.
