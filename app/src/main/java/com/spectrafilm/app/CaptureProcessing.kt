@@ -51,6 +51,10 @@ data class CaptureJob(
     val equivFocalMm: Int? = null,
     /** Exposure time in nanoseconds, from the still's own CaptureResult. */
     val shutterNs: Long? = null,
+    /** Black Pro-Mist strength, or null for no filter. Carried HERE because the render rebuilds
+     *  params from the preset id alone — a filter chosen in the viewfinder would otherwise never
+     *  reach the export. */
+    val diffusionStrength: Float? = null,
 ) {
     fun toJson(): JSONObject = JSONObject()
         .put("dng", dngPath)
@@ -59,6 +63,7 @@ data class CaptureJob(
         .put("stockName", stockName ?: JSONObject.NULL)
         .put("equivFocalMm", equivFocalMm ?: JSONObject.NULL)
         .put("shutterNs", shutterNs ?: JSONObject.NULL)
+        .put("diffusion", diffusionStrength?.toDouble() ?: JSONObject.NULL)
 
     companion object {
         fun fromJson(o: JSONObject): CaptureJob? {
@@ -70,6 +75,7 @@ data class CaptureJob(
                 stockName = o.optString("stockName").takeIf { it.isNotBlank() && it != "null" },
                 equivFocalMm = o.optInt("equivFocalMm", -1).takeIf { it > 0 },
                 shutterNs = o.optLong("shutterNs", -1L).takeIf { it > 0L },
+                diffusionStrength = o.optDouble("diffusion", -1.0).takeIf { it > 0.0 }?.toFloat(),
             )
         }
     }
@@ -271,6 +277,13 @@ class ProcessingService : Service() {
             state.rawTemperature.toDouble(), state.rawTint.toDouble(), EXPORT_MAX_EDGE_PX,
         )
         val result = try {
+            // Applied AFTER the preset so a filter chosen at the shutter wins over the preset's
+            // default. Diffusion is spatial, so it exists only here — the viewfinder's LUT is
+            // pointwise and cannot show it.
+            job.diffusionStrength?.let {
+                state.cameraDiffusionState.active = true
+                state.cameraDiffusionState.strength = it
+            }
             engine.simulate(image, state.toParams())
         } finally {
             image.close()

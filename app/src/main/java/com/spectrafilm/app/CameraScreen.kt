@@ -152,6 +152,23 @@ private val TOGGLE_INSET = 10.dp
  *  gap between the shutter's edge and the screen edge and needs its radius to find that edge. */
 private val SHUTTER_DIAMETER = 70.dp
 
+/**
+ * Diffusion filter grades, named as the real Black Pro-Mist glass is — photographers already know
+ * what 1/4 looks like, and an abstract 0..1 slider would not mean anything on a lens.
+ *
+ * SPATIAL, so the viewfinder cannot preview it: the preview is a pointwise 3D LUT and diffusion
+ * spreads light between pixels. The choice is carried on the CaptureJob and applied by the engine
+ * during the render, alongside grain and halation, which are invisible in the finder for the same
+ * reason.
+ */
+private val FILTER_GRADES: List<Pair<String, Float?>> = listOf(
+    "NONE" to null,
+    "1/8" to 0.125f,
+    "1/4" to 0.25f,
+    "1/2" to 0.5f,
+    "1" to 1.0f,
+)
+
 /** Gallery preview button. Small enough to read as a thumbnail rather than a second shutter. */
 private val GALLERY_BUTTON = 44.dp
 
@@ -299,6 +316,10 @@ private fun CameraScreenSupported(
     var gain by remember { mutableFloatStateOf(1f) }
     var aeLocked by remember { mutableStateOf(false) }
     var capturing by remember { mutableStateOf(false) }
+    // Index into FILTER_GRADES. Survives rotation: a chosen filter is part of how the user is
+    // shooting, not transient UI state.
+    var filterGrade by rememberSaveable { mutableIntStateOf(0) }
+    var filterMenuOpen by remember { mutableStateOf(false) }
     var canCapture by remember(lens) { mutableStateOf(false) }
 
     // MediaActionSound, not a bundled asset: it is the platform shutter click, and using it
@@ -646,6 +667,7 @@ private fun CameraScreenSupported(
                                 stockName = stock.name,
                                 equivFocalMm = lens.equivFocalMm,
                                 shutterNs = session.lastExposureNs,
+                                diffusionStrength = FILTER_GRADES[filterGrade].second,
                             ),
                         )
                         scope.launch {
@@ -740,6 +762,14 @@ private fun CameraScreenSupported(
             // two placements that agreed on nothing. Declared BEFORE the flash overlay so a
             // capture blacks the readout out along with the image.
             Box(Modifier.align(Alignment.TopEnd).padding(TOGGLE_INSET)) { toggles() }
+            Box(Modifier.align(Alignment.BottomEnd).padding(TOGGLE_INSET)) {
+                FilterControl(
+                    grade = filterGrade,
+                    open = filterMenuOpen,
+                    onToggleMenu = { filterMenuOpen = !filterMenuOpen },
+                    onPick = { filterGrade = it; filterMenuOpen = false },
+                )
+            }
             if (flash.value > 0f) {
                 Box(
                     Modifier.fillMaxSize()
@@ -1085,6 +1115,59 @@ private fun LensChip(label: String, selected: Boolean, onClick: () -> Unit) {
 }
 
 /** Classic shutter: filled disc inside a ring. */
+/**
+ * The lens-filter affordance: a small filter-ring glyph that opens the grade list.
+ *
+ * Drawn rather than lettered — a ring with a highlight reads as a piece of glass at 22dp where a
+ * word would not fit. Same halo and colour as the AE/AF readout, since it is the same kind of
+ * overlay mark sitting over a live scene.
+ */
+@Composable
+private fun FilterControl(
+    grade: Int,
+    open: Boolean,
+    onToggleMenu: () -> Unit,
+    onPick: (Int) -> Unit,
+) {
+    Column(horizontalAlignment = Alignment.End) {
+        if (open) {
+            // Lighter and a shade smaller than the AE/AF row: this is a list being chosen from,
+            // not a status readout, and it should not compete with the frame.
+            val style = readoutTextStyle().copy(fontSize = 9.sp, fontWeight = FontWeight.Light)
+            FILTER_GRADES.forEachIndexed { i, (label, _) ->
+                Text(
+                    label,
+                    style = style,
+                    color = if (i == grade) SELECTED else UNSELECTED,
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(8.dp))
+                        .clickable { onPick(i) }
+                        .padding(horizontal = 8.dp, vertical = 3.dp),
+                )
+            }
+        }
+        Box(
+            Modifier.size(26.dp).clip(RoundedCornerShape(13.dp)).clickable { onToggleMenu() },
+            contentAlignment = Alignment.Center,
+        ) {
+            val tint = if (grade > 0) SELECTED else UNSELECTED
+            Canvas(Modifier.size(18.dp)) {
+                val r = size.minDimension / 2f
+                // A filter ring: outer rim, inner glass, and a diagonal catch-light.
+                drawCircle(tint, radius = r - 1.dp.toPx(), style = Stroke(width = 1.4.dp.toPx()))
+                drawCircle(tint.copy(alpha = 0.55f), radius = r - 5.dp.toPx(),
+                    style = Stroke(width = 1.dp.toPx()))
+                drawLine(
+                    tint.copy(alpha = 0.75f),
+                    start = androidx.compose.ui.geometry.Offset(r * 0.55f, r * 1.35f),
+                    end = androidx.compose.ui.geometry.Offset(r * 1.35f, r * 0.55f),
+                    strokeWidth = 1.dp.toPx(),
+                )
+            }
+        }
+    }
+}
+
 @Composable
 private fun ShutterButton(enabled: Boolean, onClick: () -> Unit) {
     val tint = if (enabled) Color.White else UNSELECTED
