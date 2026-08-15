@@ -420,6 +420,12 @@ void applyParityParams(LibRaw& raw, const DecodeOptions& options) {
     // the LibRaw instance is ever reused or partially re-initialized by a caller.
     p.half_size = options.halfSize ? 1 : 0;
 
+    // FBDD pre-demosaic denoise (0 = off = the rawpy-parity default; see
+    // DecodeOptions::fbddNoiseReduction for why this is opt-in). Note this is
+    // silently inert whenever half_size is on — LibRaw skips the entire demosaic
+    // block, and fbdd() lives inside it.
+    p.fbdd_noiserd = options.fbddNoiseReduction;
+
     if (options.whiteBalance == WhiteBalanceMode::AsShot) {
         p.use_camera_wb = 1;
     } else {

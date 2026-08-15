@@ -67,6 +67,28 @@ struct DecodeOptions {
     // 4080×3060 result is a ~150 MB float buffer that OOMs the managed heap when wrapped
     // in a Java-backed direct ByteBuffer. Proxy-grade (nearest-step subsample).
     int maxLongEdge = 0;
+
+    // FBDD ("Fake Before Demosaic Denoising") strength → imgdata.params.fbdd_noiserd.
+    //   0 = off, 1 = light, 2 = full.
+    //
+    // Default 0 deliberately: docs/RAW_DNG.md pins this decoder to the same LibRaw
+    // postprocess options desktop spektrafilm passes through rawpy, and rawpy leaves
+    // FBDD off. Anything other than 0 is a documented deviation from that oracle, so
+    // it is opt-in per call rather than a global default.
+    //
+    // Why FBDD rather than params.threshold (wavelet): fbdd() runs on the CFA data
+    // immediately BEFORE demosaic (src/postprocessing/dcraw_process.cpp), so it
+    // suppresses noise before the interpolator can smear it into coloured speckle.
+    // Measured on this project's own captures, the sensor noise is chromatic — the
+    // red and blue CFA planes carry ~half green's signal and are ~2x noisier after
+    // white balance — which is exactly the artefact FBDD targets.
+    //
+    // IMPORTANT: FBDD NEVER RUNS ON A HALF-SIZE DECODE, whatever this is set to.
+    // LibRaw's pre_interpolate() sets `filters = 0` and bumps `colors` to 4 when
+    // half_size is on (src/demosaic/misc_demosaic.cpp), and the fbdd() call is gated
+    // on `noiserd > 0 && colors == 3 && filters > 1000` — so the whole demosaic block,
+    // fbdd() included, is skipped. Callers that want denoising must decode full-res.
+    int fbddNoiseReduction = 0;
 };
 
 // Stable decode status codes. These cross to Kotlin (RawDecoder.DecodeStatus)

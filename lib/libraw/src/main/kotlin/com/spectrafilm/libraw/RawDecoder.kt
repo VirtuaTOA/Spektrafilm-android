@@ -105,6 +105,19 @@ object RawDecoder {
          * dimensions (some DNGs ignore LibRaw's half_size and decode full-resolution).
          */
         val maxLongEdge: Int = 0,
+        /**
+         * FBDD pre-demosaic noise reduction: 0 = off, 1 = light, 2 = full.
+         *
+         * Defaults to 0 because `docs/RAW_DNG.md` pins this decoder to the LibRaw
+         * options desktop spektrafilm passes through rawpy, and rawpy leaves FBDD off —
+         * so a non-zero value is a deliberate, per-call deviation from that oracle.
+         *
+         * **Has no effect when [halfSize] is true.** LibRaw skips the whole demosaic
+         * block on half-size decodes and `fbdd()` lives inside it, so a proxy decode is
+         * always un-denoised. Anything comparing a half-size preview against a full-res
+         * export will see the export as the cleaner of the two.
+         */
+        val fbddNoiseReduction: Int = 0,
     )
 
     /** Constructed by the native layer (raw_decoder_jni.cpp). */
@@ -132,7 +145,7 @@ object RawDecoder {
     fun decodeToLinear(bytes: ByteArray, settings: Settings = Settings()): LinearResult =
         nativeDecodeBytes(
             bytes, settings.whiteBalance.nativeMode, settings.temperatureK, settings.tint,
-            settings.halfSize, settings.maxLongEdge,
+            settings.halfSize, settings.maxLongEdge, settings.fbddNoiseReduction,
         ).toLinear()
 
     /**
@@ -149,7 +162,7 @@ object RawDecoder {
         return nativeDecodeBuffer(
             direct, direct.remaining(),
             settings.whiteBalance.nativeMode, settings.temperatureK, settings.tint,
-            settings.halfSize, settings.maxLongEdge,
+            settings.halfSize, settings.maxLongEdge, settings.fbddNoiseReduction,
         ).toLinear()
     }
 
@@ -160,7 +173,7 @@ object RawDecoder {
     fun decodeToLinear(fd: Int, settings: Settings = Settings()): LinearResult =
         nativeDecodeFd(
             fd, settings.whiteBalance.nativeMode, settings.temperatureK, settings.tint,
-            settings.halfSize, settings.maxLongEdge,
+            settings.halfSize, settings.maxLongEdge, settings.fbddNoiseReduction,
         ).toLinear()
 
     /** Decode by reading an InputStream fully into memory (SAF convenience). */
@@ -242,17 +255,17 @@ object RawDecoder {
     // --- native bridge (raw_decoder_jni.cpp) ---
     private external fun nativeDecodeBytes(
         bytes: ByteArray, wbMode: Int, temperatureK: Double, tint: Double,
-        halfSize: Boolean, maxLongEdge: Int,
+        halfSize: Boolean, maxLongEdge: Int, fbddNoiseReduction: Int,
     ): NativeResult
 
     private external fun nativeDecodeBuffer(
         buffer: ByteBuffer, len: Int, wbMode: Int, temperatureK: Double, tint: Double,
-        halfSize: Boolean, maxLongEdge: Int,
+        halfSize: Boolean, maxLongEdge: Int, fbddNoiseReduction: Int,
     ): NativeResult
 
     private external fun nativeDecodeFd(
         fd: Int, wbMode: Int, temperatureK: Double, tint: Double,
-        halfSize: Boolean, maxLongEdge: Int,
+        halfSize: Boolean, maxLongEdge: Int, fbddNoiseReduction: Int,
     ): NativeResult
 
     /** Free a native (malloc + NewDirectByteBuffer) result buffer (see [freeOffHeap]). */

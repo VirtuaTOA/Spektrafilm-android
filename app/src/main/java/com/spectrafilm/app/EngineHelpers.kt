@@ -88,6 +88,12 @@ fun decodeRawToLinear(
     temperatureK: Double,
     tint: Double,
     maxEdge: Int = MAX_EDGE_PX,
+    /**
+     * FBDD pre-demosaic denoise: 0 = off (matches desktop spektrafilm's rawpy decode),
+     * 1 = light, 2 = full. Only takes effect on a full-resolution decode — see
+     * RawDecoder.Settings.fbddNoiseReduction.
+     */
+    fbddNoiseReduction: Int = 0,
 ): LinearImage {
     // Issue #7 mitigation: even with the fd decode (no full-file Java byte[]), LibRaw
     // still expands the RAW to a float32 buffer (12 bytes/px) natively. For preview-scale
@@ -99,7 +105,9 @@ fun decodeRawToLinear(
     var halfSize = maxEdge <= HALF_DECODE_EDGE_THRESHOLD
     while (true) {
         try {
-            return decodeRawAtEdge(ctx, uri, wb, temperatureK, tint, attemptEdge, halfSize)
+            return decodeRawAtEdge(
+                ctx, uri, wb, temperatureK, tint, attemptEdge, halfSize, fbddNoiseReduction,
+            )
         } catch (oom: OutOfMemoryError) {
             // Encourage the collector to reclaim the failed transient before retrying.
             System.gc()
@@ -171,9 +179,14 @@ private fun decodeRawAtEdge(
     tint: Double,
     maxEdge: Int,
     halfSize: Boolean,
+    fbddNoiseReduction: Int,
 ): LinearImage {
     val settings = RawDecoder.Settings(
         whiteBalance = wb, temperatureK = temperatureK, tint = tint, halfSize = halfSize,
+        // Pre-demosaic denoise, off unless the caller opts in. Note this is inert whenever
+        // halfSize is true (LibRaw skips the demosaic block, and fbdd() is inside it) —
+        // including when the OOM ladder below silently flips halfSize on.
+        fbddNoiseReduction = fbddNoiseReduction,
         // Hard cap the NATIVE decode to the target edge: some DNGs ignore LibRaw half_size
         // and decode full-resolution, and the result's direct ByteBuffer is a managed
         // byte[] on Android — a 4080x3060 buffer is ~150 MB and OOMs the ART heap. With

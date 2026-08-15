@@ -280,6 +280,23 @@ class ProcessingService : Service() {
         val image = decodeRawToLinear(
             this, Uri.fromFile(dng), WhiteBalance.AS_SHOT,
             state.rawTemperature.toDouble(), state.rawTint.toDouble(), EXPORT_MAX_EDGE_PX,
+            // FBDD light. Camera captures are single-frame RAW with the ISP fully disabled
+            // (CameraSession.applyIspDisables), so nothing upstream has ever touched their
+            // noise. Measured on this device's own DNGs, that noise is chromatic — R and B
+            // carry ~half of green's signal and roughly double it after white balance —
+            // which is precisely what a pre-demosaic pass suppresses before the
+            // interpolator can turn it into coloured speckle.
+            //
+            // Strength 1 (light) rather than 2 on purpose: the engine adds film grain
+            // downstream, and scrubbing the luminance floor flat before re-adding
+            // synthetic grain is what makes a film simulation read as plastic. The goal
+            // is to remove the colour blotches, not the texture.
+            //
+            // Deliberately NOT applied to the editor's import path, which stays byte-equal
+            // to desktop spektrafilm's rawpy decode (docs/RAW_DNG.md) — and whose previews
+            // are half-size, where FBDD cannot run anyway, so enabling it there would make
+            // previews and exports disagree.
+            fbddNoiseReduction = 1,
         )
         val result = try {
             // Applied AFTER the preset so a filter chosen at the shutter wins over the preset's
