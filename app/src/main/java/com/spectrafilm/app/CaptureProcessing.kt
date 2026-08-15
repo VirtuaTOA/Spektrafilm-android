@@ -292,6 +292,19 @@ class ProcessingService : Service() {
             // synthetic grain is what makes a film simulation read as plastic. The goal
             // is to remove the colour blotches, not the texture.
             //
+            // MEASURED, do not "turn it up" — 2 is WORSE than 1. Decoding a real capture
+            // (SPK_1786753212833.dng) at each strength and taking the median per-tile
+            // sigma over shadow/midtone tiles gives, vs fbdd=0:
+            //     strength 1 -> R -22% G -19% B -27%   (mean -22.6%)
+            //     strength 2 -> R -15% G -16% B -18%   (mean -16.3%)
+            // LibRaw's "full" mode runs an extra fbdd_correction2() pass that puts
+            // high-frequency variation back. 1 is the optimum, not a conservative pick.
+            //
+            // Also measured: this is worth ~0.3 stops and is near the edge of visibility
+            // once film grain lands on top. It is a cheap improvement, NOT a fix for
+            // chromatic shadow noise — that needs a chroma-specific filter or multi-frame
+            // capture. See docs/AUDIT.md.
+            //
             // Deliberately NOT applied to the editor's import path, which stays byte-equal
             // to desktop spektrafilm's rawpy decode (docs/RAW_DNG.md) — and whose previews
             // are half-size, where FBDD cannot run anyway, so enabling it there would make
