@@ -1,5 +1,36 @@
 # Spektrafilm Android — Session Handoff
 
+## START HERE — how to work on this project
+
+Read this file and the relevant `docs/` section BEFORE writing code. The expensive knowledge on
+this project is written down; re-deriving it has repeatedly cost whole sessions.
+
+**MEASURE BEFORE DIAGNOSING.** Confident diagnoses here have a bad record. Scroll jank was blamed on
+cache eviction, then decode concurrency, then `loadThumbnail` — the profiler found none of them
+(`dumpsys gfxinfo <pkg> framestats`, phase breakdown). A "brightness" bug was chased through four
+wrong theories before logging the actual pixels settled it in one run. Get a number first.
+
+**READ THE HEADER COMMENTS FIRST.** Two of this project's hardest bugs had their answers sitting in
+files already open: `model/diffusion.h:22` states outright that the oracle uses
+`scipy.signal.fftconvolve` and this port deliberately does not; `TONEMAP_MODE` reports only that
+*a* curve is in use, never which. Both were discovered after hours of theorising.
+
+**NEVER write Kotlin/C++ source through a script using `${'$'}{'${'$'}'}` escaping.** It emits a LITERAL
+dollar, so strings silently stop interpolating — it has produced `${'$'}{it}mm` on screen and a cache key
+shared by every photo. It always compiles. This bug has been introduced TWICE.
+
+**TEST THE EXPORT PATH, NOT JUST THE PREVIEW.** The diffusion feature shipped having only ever been
+looked at in the viewfinder; the export had never rendered a single frame, and the first real
+capture appeared to hang the queue for hours.
+
+**COMMIT AT WORKING POINTS.** The user does not care about pushing to GitHub; they care about never
+having a broken app. `known-good/*` branches mark device-verified states.
+
+**ANY engine change: run `tools/parity/run_engine_parity.sh` before AND after.** It is 37 gates and
+it WILL catch a wrong implementation — it rejected a diffusion change at max_abs 0.37 against a
+1e-4 tolerance. Do not assume a gate does not exist; I twice claimed diffusion had no golden and was
+twice wrong.
+
 ## Current state (2026-08-12, fork `VirtuaTOA/Spektrafilm-android`, branch `main`)
 
 **This is Dan's fork**, created 2026-08-08 from `thetechgeekko/Spektrafilm-android`. Everything
