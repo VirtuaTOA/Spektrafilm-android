@@ -618,11 +618,34 @@ gives radius ~60px, a ~14k-tap kernel, well under a second. The camera is the fi
 diffusion at full resolution, where radius scales with resolution and cost scales with its SQUARE.
 640px -> 4080px is ~6.4x the radius and ~40x the pixels: about 1600x the work.
 
-**Therefore the fix is to finish the port, not to approximate it.** Implement FFT convolution
-(overlap-add tiled, to bound memory against the pipeline's ~1.5 GB peak) and it will reproduce the
-goldens — the note above guarantees direct and FFT agree to 1e-16, which is four orders inside the
+**Therefore the fix is to finish the port, not to approximate it.** Implement FFT convolution and
+it will reproduce the goldens — the note above guarantees direct and FFT agree to 1e-16, which is four orders inside the
 tolerance. No opt-in flag, no divergence between camera and editor, and it fixes the editor's own
 full-resolution export, which hangs identically today.
 
 **DO NOT take the surrogate route** (§9b). fast_exponential_filter is a 3-Gaussian FIT — it changes
 the mathematics, which is exactly why test_diffusion rejected it at max_abs 0.37.
+
+### §9d FFT sizing — read this before writing the kernel
+
+Memory is the design constraint, and the SHAPE of the FFT decides it. Worked for the real case:
+4080x2720 render, kernel 1773x1773 (black_pro_mist at capture resolution).
+
+Linear convolution needs the padded extent, image + kernel - 1 = 5852 x 4492.
+
+- **Power-of-two radix-2** (the easy FFT to write) rounds that to **8192 x 8192** = 67M complex.
+  At complex128 that is 1.07 GB PER ARRAY, and at least two are live. Over 2 GB on top of the
+  pipeline's existing ~1.5 GB peak. NOT VIABLE — do not start here and discover it late.
+- **5-smooth sizes** (what scipy's next_fast_len picks, e.g. 5880 x 4500 = 26M) need a MIXED-RADIX
+  FFT (2/3/5) or Bluestein. ~423 MB per array, ~850 MB live. Viable, but a bigger kernel to write.
+- **Overlap-add with power-of-two tiles** keeps radix-2 AND bounds memory: a 4096x4096 tile FFT is
+  268 MB per array (~536 MB live) and yields 4096 - 1773 = 2323 useful output pixels per tile, so a
+  4080x2720 frame is ~2x2 tiles. Probably the best effort/benefit trade here.
+
+WHAT IS NOT KNOWN: whether the simple non-tiled route would actually survive on device. The S25 has
+12 GB and the render runs in a foreground service, so a transient ~850 MB on top of 1.5 GB may well
+be fine. MEASURE IT before adding tiling complexity — tiles must exceed the kernel, so they buy less
+than expected while adding seam handling that is easy to get subtly wrong.
+
+Desktop does none of this: scipy's fftconvolve allocates ~0.5-1 GB transiently and an 8 GB Mac does
+not care. The phone's constraint is Android killing processes under pressure, not the arithmetic.
