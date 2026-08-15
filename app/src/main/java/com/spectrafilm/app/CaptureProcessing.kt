@@ -43,11 +43,22 @@ data class CaptureJob(
     val dngPath: String,
     val presetId: String?,
     val createdMs: Long,
+    /** Human-readable film stock ("PORTRA 400") and the 35mm-equivalent focal length shown on
+     *  the lens chip. Captured HERE because this is the only place that knows them — the render
+     *  runs later in a service with nothing but this record, and the preset could have changed by
+     *  then. Nullable so queue entries written before this existed still parse. */
+    val stockName: String? = null,
+    val equivFocalMm: Int? = null,
+    /** Exposure time in nanoseconds, from the still's own CaptureResult. */
+    val shutterNs: Long? = null,
 ) {
     fun toJson(): JSONObject = JSONObject()
         .put("dng", dngPath)
         .put("preset", presetId ?: JSONObject.NULL)
         .put("created", createdMs)
+        .put("stockName", stockName ?: JSONObject.NULL)
+        .put("equivFocalMm", equivFocalMm ?: JSONObject.NULL)
+        .put("shutterNs", shutterNs ?: JSONObject.NULL)
 
     companion object {
         fun fromJson(o: JSONObject): CaptureJob? {
@@ -56,6 +67,9 @@ data class CaptureJob(
                 dngPath = dng,
                 presetId = o.optString("preset").takeIf { it.isNotBlank() && it != "null" },
                 createdMs = o.optLong("created"),
+                stockName = o.optString("stockName").takeIf { it.isNotBlank() && it != "null" },
+                equivFocalMm = o.optInt("equivFocalMm", -1).takeIf { it > 0 },
+                shutterNs = o.optLong("shutterNs", -1L).takeIf { it > 0L },
             )
         }
     }
@@ -139,6 +153,50 @@ private fun cropToFilmAspect(src: android.graphics.Bitmap): android.graphics.Bit
     return runCatching {
         android.graphics.Bitmap.createBitmap(src, x, y, targetW, targetH)
     }.getOrDefault(src)
+}
+
+/**
+ * EXIF for a finished frame: what the camera recorded, plus what the SIMULATION chose.
+ *
+ * The shutter values come from the DNG, which DngCreator wrote from the exact CaptureResult that
+ * produced the frame — authoritative in a way nothing reconstructed later could be. The film stock
+ * and the 35mm-equivalent focal length come from the job record, because they are decisions the UI
+ * made and are not sensor facts: the stock is a look, and the equivalent focal length depends on
+ * this app's 3:2 crop.
+ *
+ * The stock goes in USER_COMMENT rather than a private tag so it survives being copied, shared or
+ * opened in anything else that reads EXIF — the point is that the photo remembers how it was made.
+ */
+private val CAMERA_EXIF_TAGS = listOf(
+    androidx.exifinterface.media.ExifInterface.TAG_MAKE,
+    androidx.exifinterface.media.ExifInterface.TAG_MODEL,
+    androidx.exifinterface.media.ExifInterface.TAG_LENS_MODEL,
+)
+
+private fun captureExif(job: CaptureJob): SourceExif {
+    val tags = HashMap<String, String>()
+    runCatching {
+        val src = androidx.exifinterface.media.ExifInterface(job.dngPath)
+        for (t in CAMERA_EXIF_TAGS) src.getAttribute(t)?.let { tags[t] = it }
+    }.onFailure { Diag.w("capture: could not read DNG exif: ${it.message}") }
+
+    job.stockName?.let { tags[androidx.exifinterface.media.ExifInterface.TAG_USER_COMMENT] = it }
+    job.equivFocalMm?.let {
+        tags[androidx.exifinterface.media.ExifInterface.TAG_FOCAL_LENGTH_IN_35MM_FILM] = it.toString()
+    }
+    // From the CaptureResult, not the DNG: reading it back out of the DNG did not work in
+    // practice, and this is the same number the sensor actually used.
+    job.shutterNs?.let {
+        tags[androidx.exifinterface.media.ExifInterface.TAG_EXPOSURE_TIME] =
+            (it / 1_000_000_000.0).toString()
+    }
+    // From the queue record, not the DNG: this is when the SHUTTER fired, which is what a
+    // photographer means by when the photo was taken. The render may finish a minute later.
+    val stamp = java.text.SimpleDateFormat("yyyy:MM:dd HH:mm:ss", java.util.Locale.US)
+        .format(java.util.Date(job.createdMs))
+    tags[androidx.exifinterface.media.ExifInterface.TAG_DATETIME_ORIGINAL] = stamp
+    tags[androidx.exifinterface.media.ExifInterface.TAG_DATETIME] = stamp
+    return SourceExif(tags)
 }
 
 class ProcessingService : Service() {
@@ -230,7 +288,11 @@ class ProcessingService : Service() {
             if (bmp !== full) full.recycle()
             val name = "SPK_" + java.text.SimpleDateFormat("yyyyMMdd_HHmmss", java.util.Locale.US)
                 .format(java.util.Date(job.createdMs))
-            saveToGallery(this, bmp, ExportFormat.JPEG, 95, displayName = name)
+            saveToGallery(
+                this, bmp, ExportFormat.JPEG, 95,
+                sourceExif = captureExif(job),
+                displayName = name,
+            )
         } finally {
             result.close()
         }

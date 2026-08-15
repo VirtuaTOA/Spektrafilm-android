@@ -98,8 +98,24 @@ import kotlinx.coroutines.withContext
 import kotlin.math.abs
 import kotlin.math.roundToInt
 
-private val SELECTED = Color.White
-private val UNSELECTED = Color(0xFF8A8A8A)
+internal val SELECTED = Color.White
+internal val UNSELECTED = Color(0xFF8A8A8A)
+
+/**
+ * The camera readout's text: small, wide-tracked, with a dark halo so it stays legible over a
+ * bright scene. ONE definition, shared with the gallery's info panel — the two are the same kind
+ * of overlay text and should not drift apart.
+ */
+@Composable
+internal fun readoutTextStyle() = LocalTextStyle.current.copy(
+    fontSize = 10.sp,
+    letterSpacing = 0.5.sp,
+    shadow = Shadow(
+        color = Color.Black.copy(alpha = 0.55f),
+        offset = Offset.Zero,
+        blurRadius = 3.5f,
+    ),
+)
 // Narrow enough that the previous/next stock stay readable either side of the centred
 // one. Wider items pushed the neighbours off the edges entirely.
 private val STOCK_ITEM_WIDTH = 124.dp
@@ -623,7 +639,14 @@ private fun CameraScreenSupported(
                         error = null
                         ProcessingService.enqueue(
                             ctx,
-                            CaptureJob(file.absolutePath, stock.id, System.currentTimeMillis()),
+                            CaptureJob(
+                                dngPath = file.absolutePath,
+                                presetId = stock.id,
+                                createdMs = System.currentTimeMillis(),
+                                stockName = stock.name,
+                                equivFocalMm = lens.equivFocalMm,
+                                shutterNs = session.lastExposureNs,
+                            ),
                         )
                         scope.launch {
                             queued = withContext(Dispatchers.IO) { CaptureQueue.pending(ctx) }

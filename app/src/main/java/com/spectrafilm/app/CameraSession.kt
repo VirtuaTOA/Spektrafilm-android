@@ -39,6 +39,7 @@ import android.hardware.camera2.CameraDevice
 import android.hardware.camera2.CameraManager
 import android.hardware.camera2.CameraMetadata
 import android.hardware.camera2.CaptureRequest
+import android.hardware.camera2.CaptureResult
 import android.hardware.camera2.params.OutputConfiguration
 import android.hardware.camera2.params.SessionConfiguration
 import android.hardware.camera2.params.TonemapCurve
@@ -258,6 +259,15 @@ class CameraSession(
     // because a still capture wants the sensor's full resolution, and DngCreator needs the
     // untouched Bayer frame plus the exact CaptureResult that produced it.
     private var rawReader: ImageReader? = null
+
+    /**
+     * Exposure time (ns) of the most recent still, straight from its CaptureResult.
+     *
+     * Read HERE rather than parsed back out of the DNG later: this is the metadata for the exact
+     * frame that was captured, and it removes any dependence on a DNG parser recognising the tag.
+     */
+    @Volatile var lastExposureNs: Long? = null
+        private set
     private var captureChars: CameraCharacteristics? = null
     // A capture is an Image and a TotalCaptureResult that arrive on different callbacks;
     // DngCreator needs BOTH. One shot is in flight at a time, so a single pending slot each
@@ -703,6 +713,7 @@ class CameraSession(
                     sess: CameraCaptureSession, request: CaptureRequest,
                     result: TotalCaptureResult,
                 ) {
+                    lastExposureNs = result.get(CaptureResult.SENSOR_EXPOSURE_TIME)
                     pendingResult = result
                     tryWriteDng()
                 }

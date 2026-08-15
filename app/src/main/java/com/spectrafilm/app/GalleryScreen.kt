@@ -46,6 +46,7 @@ import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.itemsIndexed
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -77,6 +78,7 @@ import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.Constraints
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -111,6 +113,9 @@ private val OPEN_EASING = CubicBezierEasing(0.35f, 0f, 0.15f, 1f)
  *  Short and decelerating: the gesture has usually done most of the travel already. */
 private const val SLIDE_MS = 260
 private val SLIDE_EASING = CubicBezierEasing(0.2f, 0f, 0f, 1f)
+
+/** Movement below this is a tap, not a drag, so the pan handler leaves it for the tap detector. */
+private const val TAP_SLOP_PX = 3f
 
 /** How far a photo can be pinched in. 8x lets you inspect grain on a 12 MP frame. */
 private const val MAX_ZOOM = 8f
@@ -431,6 +436,73 @@ private fun GalleryCell(item: Gallery.Item, onClick: (Rect, Bitmap?) -> Unit) {
  * [progress] is a lambda so it is read in the layout and draw phases only; reading it in
  * composition would recompose this subtree on every frame.
  */
+/**
+ * The info affordance: a small circled "i" in the photo's bottom-right corner, and the capture
+ * metadata when it is tapped.
+ *
+ * Positioned against the PHOTO's fit-box rather than the screen, so on a 3:2 frame in a tall
+ * window it sits on the photograph instead of floating in the letterbox bar.
+ *
+ * Text uses the camera's own readout style — same size, tracking and dark halo — because it is
+ * the same problem: small overlay text that has to stay readable over whatever the picture
+ * happens to be doing underneath it.
+ */
+@Composable
+private fun PhotoInfo(item: Gallery.Item, aspect: Float) {
+    val ctx = LocalContext.current
+    var open by remember(item.id) { mutableStateOf(false) }
+    var info by remember(item.id) { mutableStateOf<Gallery.Info?>(null) }
+    LaunchedEffect(item.id, open) {
+        if (open && info == null) {
+            info = withContext(Gallery.decodeDispatcher) { Gallery.info(ctx, item) }
+        }
+    }
+
+    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+        Box(
+            Modifier.fillMaxSize().aspectRatio(aspect),
+            contentAlignment = Alignment.BottomEnd,
+        ) {
+            Column(
+                Modifier.padding(12.dp),
+                horizontalAlignment = Alignment.End,
+            ) {
+                val i = info
+                if (open && i != null) {
+                    val style = readoutTextStyle()
+                    // Nulls are skipped rather than shown as blanks: a frame shot before the app
+                    // recorded metadata should look sparse, not broken.
+                    listOfNotNull(i.stock, i.shutter, i.focal, i.taken).forEach { line ->
+                        Text(
+                            line,
+                            style = style,
+                            color = SELECTED,
+                            modifier = Modifier.padding(bottom = 3.dp),
+                        )
+                    }
+                }
+                Box(
+                    Modifier.size(22.dp)
+                        .clip(CircleShape)
+                        .border(1.dp, Color.White.copy(alpha = 0.75f), CircleShape)
+                        .clickable { open = !open },
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(
+                        "I",
+                        // SERIF so the capital reads as the classic circled-i mark: the
+                        // sans-serif form is a bare vertical stroke and looks like a stray line
+                        // rather than a letter at this size. Everything else keeps the camera's
+                        // readout style.
+                        style = readoutTextStyle().copy(fontFamily = FontFamily.Serif),
+                        color = Color.White.copy(alpha = 0.85f),
+                    )
+                }
+            }
+        }
+    }
+}
+
 @Composable
 private fun ExpandingPhoto(bitmap: Bitmap, from: Rect, progress: () -> Float) {
     val img = remember(bitmap) { bitmap.asImageBitmap() }
@@ -554,8 +626,14 @@ private fun GalleryViewer(items: List<Gallery.Item>, startAt: Int) {
                             val fingers = event.changes.count { it.pressed }
                             val zoom = event.calculateZoom()
                             val pan = event.calculatePan()
-                            val ours = fingers > 1 || scale > 1.01f
-                            if (ours) {
+                            // ONLY claim the gesture when something is actually happening: a
+                            // pinch, or a real drag while zoomed in. Claiming it purely because
+                            // scale > 1 meant a STATIONARY finger was consumed too — so once
+                            // zoomed, the double-tap never reached detectTapGestures and there was
+                            // no way back out except pinching. A tap moves the finger by a pixel
+                            // or two at most, hence the small threshold rather than zero.
+                            val panning = scale > 1.01f && pan.getDistance() > TAP_SLOP_PX
+                            if (fingers > 1 || panning) {
                                 if (zoom != 1f) {
                                     scale = (scale * zoom).coerceIn(1f, MAX_ZOOM)
                                 }
@@ -603,6 +681,11 @@ private fun GalleryViewer(items: List<Gallery.Item>, startAt: Int) {
                     // downscaled 12 MP frame, and the whole point here is to see the real image.
                     filterQuality = FilterQuality.High,
                 )
+                // Only on the SETTLED page, and only at fit: an info badge sliding past during a
+                // swipe, or floating over a zoomed-in crop, is noise.
+                if (settled && scale <= 1.01f) {
+                    PhotoInfo(item, b.width.toFloat() / b.height.toFloat())
+                }
             }
         }
     }
