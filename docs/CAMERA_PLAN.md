@@ -480,3 +480,69 @@ vignette) and 35 mm frame lines — one overlay layer above the viewfinder.
 | Export writers | `app/.../ImagePipeline.kt:574` (`saveToGallery`), `:674`, `:818` |
 | Recipe sidecars | `app/.../Recipes.kt` |
 | Built-in stocks | `app/.../BuiltInPresets.kt` + `spektra/presets.json` |
+
+## §9 Live diffusion-filter preview (spec, not built)
+
+Investigated 2026-08-12. The filter picker works and the EXPORT is correct; only the live preview
+is missing. This is the design.
+
+### Why it cannot go in the LUT
+
+`LutBakery` bakes a POINTWISE 3D LUT: one colour in, one colour out. Diffusion spreads light
+between pixels, so no lookup table can express it — same reason grain and halation are capture-only.
+It needs its own GPU pass.
+
+### Where it must go: BEFORE the LUT lookup
+
+The engine applies camera diffusion to the LIGHT BEFORE IT REACHES THE FILM (filming stage, on the
+linear scene). So the bloom belongs on the linear camera signal, upstream of `shaperEncode` and the
+LUT sample.
+
+This also happens to be what keeps the current look intact: the LUT still does exactly the job it
+does today, and only the light entering it changes — which is precisely what a diffusion filter is.
+Applying the bloom AFTER the LUT would be physically wrong AND would alter the colour/contrast the
+user is happy with.
+
+### The model to reproduce
+
+`model/diffusion.cpp::family_cfg` is three Gaussian groups {core, halo, bloom} with per-family
+sigmas in MICRONS ON FILM, plus weights and a total gain:
+
+| family | core | halo | bloom | w_c / w_h / w_b | gain |
+|---|---|---|---|---|---|
+| glimmerglass | 10 | 50 | 260 | 0.60 / 0.30 / 0.10 | 0.65 |
+| black_pro_mist | 16 | 95 | 380 | 0.40 / 0.47 / 0.13 | 0.75 |
+| pro_mist | 14 | 150 | 650 | 0.28 / 0.42 / 0.30 | 1.05 |
+| cinebloom | 20 | 200 | 1000 | 0.22 / 0.30 / 0.48 | 1.00 |
+
+That is a three-level bloom pyramid — cheap on a GPU. `_strength_to_scatter(strength, family)` maps
+the grade to the mix amount; the 4th field of each group and `halo_warmth` still need reading before
+implementing.
+
+### Sigma conversion — the easy thing to get wrong
+
+Sigmas are µm ON FILM. The preview is a DIFFERENT resolution from the capture, so the same physical
+sigma is a different number of pixels:
+
+    sigma_px = sigma_um / (film_format_mm * 1000 / longest_preview_dimension)
+
+Use the preview's own dimensions, not the capture's, or the previewed bloom will be the wrong size
+relative to the exported one. This mirrors `pixel_size_um` in the engine.
+
+### Implementation shape
+
+`CameraGlPreview` renders one pass straight to the screen today; this needs render-to-texture:
+
+1. camera -> FBO (linear scene, after the primaries matrix and exposure gain)
+2. downsample chain; three separable Gaussian levels at the converted sigmas
+3. weighted sum by w_c/w_h/w_b, scaled by total_gain and the strength mix
+4. composite onto the base, then the EXISTING shaper + LUT pass to the screen
+
+### Keep the numbers in one place
+
+Do NOT hardcode the table above into the shader — it would drift from the engine silently. Add a
+small C entry point returning the resolved family cfg so the GPU preview and the render read the
+same constants, the same way the viewfinder already shares `SpektraParams` with the bake.
+
+It will still be an APPROXIMATION (Gaussian pyramid vs the engine's exact PSF), the same
+relationship the LUT already has with the pointwise pipeline.

@@ -1162,7 +1162,13 @@ private fun FilterControl(
                 )
             }
         }
-        Row(verticalAlignment = Alignment.CenterVertically) {
+        // HEIGHT PINNED to the icon. Material3 gives any clickable a 48dp minimum touch target,
+        // so the family label made this Row 48dp tall and the centred icon rode up ~11dp the
+        // moment the menu opened. Fixing the Row's height keeps the icon exactly where it was.
+        Row(
+            Modifier.height(26.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
             // The FAMILY, to the left of the icon, only once the menu is open. Tapping it cycles
             // — four names would not fit as a list beside a 26dp glyph, and the grades already
             // occupy the vertical space.
