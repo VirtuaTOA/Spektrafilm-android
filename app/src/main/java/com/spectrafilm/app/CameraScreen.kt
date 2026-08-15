@@ -126,6 +126,10 @@ private val FOCUS_ITEM_WIDTH = 74.dp
  *  all agree — a mismatch would report a field of view the photograph does not have. */
 internal const val FILM_ASPECT = 3f / 2f
 
+/** 35 mm frame long side, for converting the diffusion PSF's microns-on-film into preview pixels.
+ *  Matches the engine's film_format_mm default. */
+private const val FILM_FORMAT_MM = 35f
+
 /** Narrowest the landscape control panel may become. The viewfinder takes a full-height 3:2
  *  frame and the panel takes the rest, so this is the backstop that keeps the controls usable
  *  on a screen too wide (or too short) for both to fit at full size.
@@ -166,6 +170,28 @@ private val FILTER_FAMILIES: List<Pair<String, String>> = listOf(
     "BLACK PRO-MIST" to "black_pro_mist",
     "PRO-MIST" to "pro_mist",
     "CINEBLOOM" to "cinebloom",
+)
+
+/**
+ * Per-family PSF, mirroring `model/diffusion.cpp::family_cfg`: the {core, halo, bloom} sigmas in
+ * MICRONS ON FILM, the three group weights, and the family's total gain.
+ *
+ * MIRRORED, NOT SHARED — and that is a known weakness. docs/CAMERA_PLAN.md §9 records the proper
+ * fix: a small C entry point returning the resolved family cfg so the GPU preview and the render
+ * read the same constants. Until then, a change to family_cfg must be copied here or the preview
+ * will quietly stop matching the exported frame.
+ */
+private data class FilterPsf(
+    val sigmaUm: FloatArray,
+    val weights: FloatArray,
+    val gain: Float,
+)
+
+private val FILTER_PSF: List<FilterPsf> = listOf(
+    FilterPsf(floatArrayOf(10f, 50f, 260f), floatArrayOf(0.60f, 0.30f, 0.10f), 0.65f),
+    FilterPsf(floatArrayOf(16f, 95f, 380f), floatArrayOf(0.40f, 0.47f, 0.13f), 0.75f),
+    FilterPsf(floatArrayOf(14f, 150f, 650f), floatArrayOf(0.28f, 0.42f, 0.30f), 1.05f),
+    FilterPsf(floatArrayOf(20f, 200f, 1000f), floatArrayOf(0.22f, 0.30f, 0.48f), 1.00f),
 )
 
 private val FILTER_GRADES: List<Pair<String, Float?>> = listOf(
@@ -747,6 +773,26 @@ private fun CameraScreenSupported(
         }
     }
 
+    // Sigmas are microns ON FILM, so they must be converted with the PREVIEW's own pixel pitch —
+    // the preview is a different resolution from the capture, and using the capture's would make
+    // the previewed bloom the wrong size relative to the exported one.
+    val diffusion = remember(filterGrade, filterFamily, previewSize) {
+        val strength = FILTER_GRADES[filterGrade].second
+        val psf = FILTER_PSF[filterFamily]
+        if (strength == null) {
+            Triple(0f, floatArrayOf(0f, 0f, 0f), floatArrayOf(0f, 0f, 0f))
+        } else {
+            val longest = maxOf(previewSize.width, previewSize.height).coerceAtLeast(1)
+            val pixelUm = FILM_FORMAT_MM * 1000f / longest
+            val sigmaPx = FloatArray(3) { psf.sigmaUm[it] / pixelUm }
+            // Energy-conserving mix: some fraction of the light is redistributed rather than
+            // added, which is what the glass does. Approximate — the engine's
+            // _strength_to_scatter is a nonlinear curve, so this is the tunable part.
+            val scatter = (strength * psf.gain * 0.55f).coerceIn(0f, 0.9f)
+            Triple(scatter, sigmaPx, psf.weights)
+        }
+    }
+
     val viewfinder: @Composable () -> Unit = {
         Box(Modifier.fillMaxSize()) {
             CameraGlPreview(
@@ -760,6 +806,9 @@ private fun CameraScreenSupported(
                 modifier = Modifier.fillMaxSize(),
                 lut = lut,
                 exposureGain = gain,
+                diffusionScatter = diffusion.first,
+                diffusionSigmaPx = diffusion.second,
+                diffusionWeights = diffusion.third,
                 onSurfaceReady = { s -> surface = s },
                 onUnavailable = { error = "GPU viewfinder unavailable" },
             )

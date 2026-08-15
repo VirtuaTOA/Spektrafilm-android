@@ -77,6 +77,9 @@ fun CameraGlPreview(
     modifier: Modifier = Modifier,
     lut: CubeLut? = null,
     exposureGain: Float = 1f,
+    diffusionScatter: Float = 0f,
+    diffusionSigmaPx: FloatArray = floatArrayOf(0f, 0f, 0f),
+    diffusionWeights: FloatArray = floatArrayOf(0f, 0f, 0f),
     onSurfaceReady: (Surface) -> Unit,
     onUnavailable: () -> Unit = {},
 ) {
@@ -92,6 +95,7 @@ fun CameraGlPreview(
     renderer.setDisplayAspect(displayAspect)
     renderer.setWideGamut(wideGamut)
     renderer.setCrop(cropU, cropV)
+    renderer.setDiffusion(diffusionScatter, diffusionSigmaPx, diffusionWeights)
     DisposableEffect(Unit) { onDispose { renderer.release() } }
     AndroidView(
         modifier = modifier,
@@ -155,6 +159,9 @@ private class CameraLutRenderer(
     @Volatile private var cropU = 1f
     @Volatile private var cropV = 1f
     @Volatile private var gain = 1f
+    @Volatile private var diffScatter = 0f
+    @Volatile private var diffSigma = floatArrayOf(0f, 0f, 0f)
+    @Volatile private var diffWeights = floatArrayOf(0f, 0f, 0f)
     @Volatile private var pendingLut: CubeLut? = null
     @Volatile private var haveLut = false
     private var reportedFail = false
@@ -183,6 +190,12 @@ private class CameraLutRenderer(
     fun setCrop(u: Float, v: Float) {
         if (u.isFinite() && u > 0f) cropU = u
         if (v.isFinite() && v > 0f) cropV = v
+    }
+
+    fun setDiffusion(scatter: Float, sigmaPx: FloatArray, weights: FloatArray) {
+        diffScatter = if (scatter.isFinite()) scatter.coerceIn(0f, 1f) else 0f
+        diffSigma = sigmaPx
+        diffWeights = weights
     }
 
     fun submit(rotationDegrees: Int, lut: CubeLut?, exposureGain: Float) {
@@ -292,6 +305,20 @@ private class CameraLutRenderer(
         GLES30.glUniform1i(GLES30.glGetUniformLocation(program, "uLut"), 1)
         GLES30.glUniform1i(GLES30.glGetUniformLocation(program, "uUseLut"), if (haveLut) 1 else 0)
         GLES30.glUniform1f(GLES30.glGetUniformLocation(program, "uExposureGain"), gain)
+        GLES30.glUniform1f(GLES30.glGetUniformLocation(program, "uDiffScatter"), diffScatter)
+        GLES30.glUniform3f(
+            GLES30.glGetUniformLocation(program, "uDiffSigmaPx"),
+            diffSigma[0], diffSigma[1], diffSigma[2],
+        )
+        GLES30.glUniform3f(
+            GLES30.glGetUniformLocation(program, "uDiffWeights"),
+            diffWeights[0], diffWeights[1], diffWeights[2],
+        )
+        GLES30.glUniform2f(
+            GLES30.glGetUniformLocation(program, "uTexel"),
+            1f / bufW.toFloat().coerceAtLeast(1f),
+            1f / bufH.toFloat().coerceAtLeast(1f),
+        )
         GLES30.glUniform1i(GLES30.glGetUniformLocation(program, "uWideGamut"), if (wideGamut) 1 else 0)
         GLES30.glUniform2f(GLES30.glGetUniformLocation(program, "uCrop"), cropU, cropV)
         GLES30.glUniformMatrix4fv(
@@ -423,6 +450,12 @@ private class CameraLutRenderer(
             uniform int uUseLut;
             uniform int uWideGamut;
             uniform float uExposureGain;
+            // Diffusion filter. uDiffScatter <= 0 => the whole thing is skipped, so the default
+            // path is exactly the shader that was there before.
+            uniform float uDiffScatter;    // fraction of light redistributed
+            uniform vec3  uDiffSigmaPx;    // core, halo, bloom sigmas, in PREVIEW pixels
+            uniform vec3  uDiffWeights;    // w_c, w_h, w_b from the family table
+            uniform vec2  uTexel;          // 1 / preview buffer size
             out vec4 fragColor;
             // Cheap per-pixel hash for dithering. Static (no time term) so the noise does
             // not shimmer between frames.
@@ -494,8 +527,53 @@ private class CameraLutRenderer(
                 return 1.0 - smoothstep(-kEdgeSoftness * shortSide, 0.0, sd);
             }
 
+            /**
+             * The optical diffusion filter, as a three-scale PSF matching the engine's
+             * family_cfg {core, halo, bloom}.
+             *
+             * APPLIED TO THE LINEAR CAMERA SIGNAL, BEFORE the primaries matrix and the LUT —
+             * because the engine applies camera diffusion to the light BEFORE it reaches the
+             * film. That ordering is also what leaves the existing look alone: the LUT still
+             * does exactly its old job, only the light arriving at it has been scattered.
+             *
+             * Sparse rings rather than a true Gaussian: at preview resolution the core sigma is
+             * sub-pixel and the bloom is ~15px, so a handful of taps per scale captures the
+             * shape that matters (the wide halo around highlights) without a multi-pass blur
+             * chain. An approximation, like the LUT itself.
+             */
+            vec3 diffuseScene(vec3 base) {
+                vec3 acc = vec3(0.0);
+                float wsum = 0.0;
+                for (int s = 0; s < 3; ++s) {
+                    float sig = uDiffSigmaPx[s];
+                    float w = uDiffWeights[s];
+                    if (w <= 0.0) continue;
+                    if (sig < 0.5) {           // sub-pixel: the centre tap IS the answer
+                        acc += base * w;
+                        wsum += w;
+                        continue;
+                    }
+                    vec3 ring = vec3(0.0);
+                    // Two radii per scale (inner/outer) so a single ring does not read as a
+                    // hard halo circle around bright points.
+                    for (int i = 0; i < 8; ++i) {
+                        float a = 6.2831853 * float(i) / 8.0;
+                        vec2 dir = vec2(cos(a), sin(a));
+                        ring += texture(uCam, vUv + dir * sig * 0.9 * uTexel).rgb;
+                        ring += texture(uCam, vUv + dir * sig * 1.8 * uTexel).rgb;
+                    }
+                    acc += (ring / 16.0) * w;
+                    wsum += w;
+                }
+                if (wsum <= 0.0) return base;
+                return acc / wsum;
+            }
+
             void main() {
                 vec3 cam = texture(uCam, vUv).rgb;
+                if (uDiffScatter > 0.0) {
+                    cam = mix(cam, diffuseScene(cam), uDiffScatter);
+                }
                 if (uUseLut == 0) { fragColor = vec4(cam * frameMask(), 1.0); return; }
                 // The stream is 8-bit and SCENE-LINEAR, which spends very few code values
                 // in the shadows, so gradients arrive already quantised into visible bands
