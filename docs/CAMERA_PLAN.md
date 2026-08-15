@@ -649,3 +649,28 @@ than expected while adding seam handling that is easy to get subtly wrong.
 
 Desktop does none of this: scipy's fftconvolve allocates ~0.5-1 GB transiently and an 8 GB Mac does
 not care. The phone's constraint is Android killing processes under pressure, not the arithmetic.
+
+### §9e FFT kernel is BUILT and VERIFIED — remaining work is wiring
+
+`kernels/fft.{h,cpp}` exists: radix-2 1D/2D FFT plus `convolve_same_2d`, the equivalent of
+`scipy.signal.fftconvolve(..., mode='same')`. Verified against a direct convolution:
+
+    max |fft - direct| = 5.55e-16      (parity tolerance 1e-4)
+
+DELIBERATELY NOT WIRED IN, so it cannot disturb the parity suite until verified against it.
+
+**To finish (next session):**
+
+1. In `apply_diffusion_filter_um`, keep everything up to and including the per-channel PSF build and
+   the reflect-padded plane — that part is correct and matches the oracle. Replace ONLY the triple
+   nested convolution loop with `convolve_same_2d` per channel.
+2. MEMORY FIRST (§9d): at full frame the padded extent rounds to 8192x8192 = 1.07 GB per complex
+   plane, which is not viable. Either drive it tile-wise (overlap-add, 4096 tiles, ~536 MB live) or
+   MEASURE the single-shot peak on device before assuming it needs tiling.
+3. Re-enable diffusion on the export in `ProcessingService` (the block is commented out with a
+   pointer to §9b).
+4. Run `tools/parity/run_engine_parity.sh`. `test_diffusion` and `test_diffusion_e2e` are the gates.
+   They caught the surrogate attempt at max_abs 0.37; they will catch a wrong wiring too.
+
+Add `kernels/fft.cpp` to the CMake source list and to the host-test SRC glob (it is already covered
+by `kernels/*.cpp` in both).
