@@ -16,6 +16,8 @@
          usable without it (import-only), so the feature is declared not-required so a
          camera-less device can still install. -->
     <uses-permission android:name="android.permission.CAMERA" />
+    <!-- Shutter feedback on vibrate: the haptic that replaces the audible click. -->
+    <uses-permission android:name="android.permission.VIBRATE" />
     <!-- Captured photos render for tens of seconds, so processing continues in a
          foreground service — Android freezes cached processes, so a plain background
          coroutine would stall the moment the phone is locked. dataSync is the matching

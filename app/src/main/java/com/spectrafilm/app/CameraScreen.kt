@@ -356,12 +356,58 @@ private fun CameraScreenSupported(
     var filterFamily by rememberSaveable { mutableIntStateOf(1) }   // black_pro_mist
     var canCapture by remember(lens) { mutableStateOf(false) }
 
-    // MediaActionSound, not a bundled asset: it is the platform shutter click, and using it
-    // keeps the app compliant in regions that require an audible shutter.
+    // MediaActionSound is the platform shutter click. It plays on STREAM_SYSTEM_ENFORCED,
+    // a stream deliberately built so the shutter CANNOT be silenced — that is why it fired
+    // at full volume with the phone on vibrate and the volume slider at zero. There is no
+    // volume API on it, so the fix is to decide ourselves whether to play it at all.
+    //
+    // TRADE-OFF, deliberate: this gives up the enforced-shutter behaviour. Some regions
+    // (notably JP/KR) legally require an audible shutter, and shipping there would mean
+    // removing this gate.
     val shutterSound = remember { android.media.MediaActionSound() }
     DisposableEffect(Unit) {
         shutterSound.load(android.media.MediaActionSound.SHUTTER_CLICK)
         onDispose { shutterSound.release() }
+    }
+    val audioManager = remember(ctx) {
+        ctx.getSystemService(android.content.Context.AUDIO_SERVICE) as android.media.AudioManager
+    }
+    val vibrator = remember(ctx) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            (ctx.getSystemService(android.content.Context.VIBRATOR_MANAGER_SERVICE)
+                as android.os.VibratorManager).defaultVibrator
+        } else {
+            @Suppress("DEPRECATION")
+            ctx.getSystemService(android.content.Context.VIBRATOR_SERVICE) as android.os.Vibrator
+        }
+    }
+    // Shutter feedback that follows the phone: click only when the ringer is on AND the
+    // system stream is not muted, a short haptic on vibrate, nothing at all on silent.
+    // Read at press time, not composition time, so flipping the switch takes effect
+    // immediately without recomposing the camera.
+    val shutterFeedback: () -> Unit = {
+        when (audioManager.ringerMode) {
+            android.media.AudioManager.RINGER_MODE_VIBRATE ->
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    vibrator.vibrate(
+                        android.os.VibrationEffect.createOneShot(
+                            20L, android.os.VibrationEffect.DEFAULT_AMPLITUDE,
+                        ),
+                    )
+                } else {
+                    @Suppress("DEPRECATION")
+                    vibrator.vibrate(20L)
+                }
+            android.media.AudioManager.RINGER_MODE_SILENT -> Unit
+            // STREAM_SYSTEM is the shutter's stream. At 0 the user has muted system
+            // sounds even though the ringer is nominally "normal", so stay quiet.
+            else -> if (audioManager.getStreamVolume(
+                    android.media.AudioManager.STREAM_SYSTEM,
+                ) > 0
+            ) {
+                shutterSound.play(android.media.MediaActionSound.SHUTTER_CLICK)
+            }
+        }
     }
     // Brief blackout over the viewfinder — the visual half of the shutter. Driven by an
     // Animatable rather than a boolean so the fade cannot be cut short by recomposition.
@@ -670,7 +716,7 @@ private fun CameraScreenSupported(
                     return@ShutterButton
                 }
                 capturing = true
-                shutterSound.play(android.media.MediaActionSound.SHUTTER_CLICK)
+                shutterFeedback()
                 scope.launch {
                     flash.snapTo(1f)
                     flash.animateTo(
