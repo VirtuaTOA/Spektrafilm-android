@@ -18,6 +18,7 @@
 #include <vector>
 
 #include "kernels/exponential_filter.h"
+#include "kernels/fft.h"
 
 // M_PI is not in standard C++ <cmath>; some toolchains gate it behind
 // _USE_MATH_DEFINES / _GNU_SOURCE. Provide the IEEE-754 double value (identical
@@ -420,6 +421,21 @@ void apply_diffusion_filter_um(double* raw, int w, int h,
     std::vector<double> blurred(static_cast<size_t>(w) * h * 3);
     // Build the padded plane for one channel, convolve, write back.
     std::vector<double> padded(static_cast<size_t>(pw) * ph);
+    std::vector<double> chan(static_cast<size_t>(w) * h);
+
+    // Overlap-add tile: smallest power of two that makes progress (it must exceed
+    // ks, since useful output per tile is tile-ks+1), stepped up once when that
+    // stays inside the memory budget — a bigger tile wastes far less of each
+    // transform. 4096 is the cap: 4096^2 complex128 is 268 MB per plane and two are
+    // live, so ~537 MB, which sits on top of the pipeline's own peak.
+    //
+    // NOTE (docs/CAMERA_PLAN §9g): at the largest kernels (ProMist/Cinebloom,
+    // ks ~3050) a 4096 tile keeps only ~6% of each transform. It is correct and it
+    // is bounded, but a mixed-radix (2/3/5/7) real-input transform sized to the
+    // frame would be roughly 15x less work. That is the known next optimisation,
+    // not a defect in this path.
+    size_t tile = spk::next_pow2(static_cast<size_t>(ks) + 1);
+    if (tile * 2 <= 4096) tile *= 2;
     for (int c = 0; c < 3; ++c) {
         for (int yy = 0; yy < ph; ++yy) {
             int sy = reflect(yy - radius, h);
@@ -430,24 +446,23 @@ void apply_diffusion_filter_um(double* raw, int w, int h,
             }
         }
         const std::vector<double>& kern = psf[c];
-        // mode='same' direct convolution: out[y,x] = sum_{i,j} padded[y+i, x+j]
-        // * flip(kern)[i,j], centred. For a symmetric centred kernel the centre
-        // offsets (ks-1)/2 == radius, so out[y,x] over the original window maps
-        // to padded[y .. y+ks-1, x .. x+ks-1] convolved with the flipped kernel.
-        for (int y = 0; y < h; ++y) {
-            for (int x = 0; x < w; ++x) {
-                double acc = 0.0;
-                for (int i = 0; i < ks; ++i) {
-                    const double* prow = &padded[static_cast<size_t>(y + i) * pw + x];
-                    // flip(kern) row index (ks-1-i), reversed columns.
-                    const double* krow = &kern[static_cast<size_t>(ks - 1 - i) * ks];
-                    for (int j = 0; j < ks; ++j) {
-                        acc += prow[j] * krow[ks - 1 - j];
-                    }
-                }
-                blurred[(static_cast<size_t>(y) * w + x) * 3 + c] = acc;
-            }
-        }
+        // out[y,x] = sum_{i,j} padded[y+i, x+j] * flip(kern)[i,j] over the original
+        // window — i.e. the 'valid' region of padded (*) kern, which is exactly what
+        // convolve_valid_2d_ola returns.
+        //
+        // This WAS a direct nested loop, and it was correct but unusable at capture
+        // resolution: radius scales with the frame (radius ~ 0.37 * longest edge), so
+        // a 4080px export reaches ks = 3059 and 3.1M taps PER PIXEL — about 3.6 hours
+        // a frame. Which is why diffusion shipped preview-only. See docs/CAMERA_PLAN
+        // §9c. FFT convolution is mathematically identical (the oracle itself uses
+        // scipy.signal.fftconvolve; direct and FFT agree to ~1e-16, twelve orders
+        // inside the 1e-4 parity tolerance) and turns hours into seconds.
+        spk::convolve_valid_2d_ola(padded.data(), static_cast<size_t>(pw),
+                                   static_cast<size_t>(ph), kern.data(),
+                                   static_cast<size_t>(ks), static_cast<size_t>(ks),
+                                   chan.data(), tile);
+        for (size_t i = 0; i < chan.size(); ++i)
+            blurred[i * 3 + c] = chan[i];
     }
 
     // E_out = (1 - p_s) * E_in + p_s * blurred.

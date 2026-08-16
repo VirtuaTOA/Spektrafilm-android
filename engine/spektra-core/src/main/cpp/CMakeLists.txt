@@ -29,6 +29,7 @@ add_library(spektra SHARED
         kernels/interp.cpp
         kernels/gaussian.cpp
         kernels/exponential_filter.cpp      # float64 Gaussian + exponential mixture (spatial)
+        kernels/fft.cpp                     # radix-2 FFT + overlap-add convolution (diffusion PSF)
         kernels/spectral_upsampling.cpp     # Hanatos2025 RGB->spectrum (M3)
         kernels/stats.cpp                   # Poisson + Binomial samplers (grain, M6)
         kernels/lut3d.cpp                   # opt-in PCHIP 3D LUT accel (M7, default OFF)

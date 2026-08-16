@@ -19,6 +19,34 @@ size_t next_pow2(size_t n) {
     return p;
 }
 
+namespace {
+// Twiddle table for a transform of size n: exp(-2*pi*i*j/n) for j < n/2. Every
+// entry is computed DIRECTLY with std::polar, so accuracy matches evaluating
+// std::polar per butterfly — but it is computed once per size instead of once per
+// butterfly. Stage `len` reads it with stride n/len.
+//
+// This is not a micro-optimisation. Calling std::polar inside the butterfly loop
+// costs a sin+cos per butterfly: a 4096^2 2D transform is ~8192 1D transforms of
+// 24k trig calls each, and a full-frame diffusion export never finished a 10
+// minute benchmark. Do NOT "simplify" this back to a per-butterfly std::polar.
+//
+// The other tempting form — advancing the twiddle multiplicatively (w *= wlen) —
+// IS the one to avoid: it accumulates phase error across a long transform, and
+// this has to survive a full convolution inside a 1e-4 parity tolerance.
+const std::vector<std::complex<double>>& twiddles(size_t n) {
+    thread_local size_t cached_n = 0;
+    thread_local std::vector<std::complex<double>> cache;
+    if (cached_n != n) {
+        cache.resize(n / 2);
+        for (size_t j = 0; j < n / 2; ++j)
+            cache[j] = std::polar(1.0, -2.0 * M_PI * static_cast<double>(j) /
+                                            static_cast<double>(n));
+        cached_n = n;
+    }
+    return cache;
+}
+}  // namespace
+
 void fft_1d(std::complex<double>* a, size_t n, bool inverse) {
     if (n < 2) return;
     // Bit-reversal permutation.
@@ -31,13 +59,15 @@ void fft_1d(std::complex<double>* a, size_t n, bool inverse) {
     // Butterflies. Twiddles are recomputed per stage from std::polar rather than advanced
     // multiplicatively: the incremental form accumulates phase error over long transforms, and
     // this has to land inside a 1e-4 parity tolerance after a full convolution.
+    const std::vector<std::complex<double>>& tw = twiddles(n);
     for (size_t len = 2; len <= n; len <<= 1) {
-        const double ang = 2.0 * M_PI / static_cast<double>(len) * (inverse ? 1.0 : -1.0);
         const size_t half = len >> 1;
+        const size_t stride = n / len;
         for (size_t i = 0; i < n; i += len) {
             for (size_t k = 0; k < half; ++k) {
+                const std::complex<double> t = tw[k * stride];
                 const std::complex<double> w =
-                    std::polar(1.0, ang * static_cast<double>(k));
+                    inverse ? std::conj(t) : t;
                 const std::complex<double> u = a[i + k];
                 const std::complex<double> v = a[i + k + half] * w;
                 a[i + k] = u + v;
