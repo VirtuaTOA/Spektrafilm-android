@@ -6,6 +6,10 @@
 #include "kernels/fft.h"
 
 #include <cmath>
+#include <thread>
+#include <algorithm>
+
+#include "kernels/parallel.h"
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
@@ -56,9 +60,7 @@ void fft_1d(std::complex<double>* a, size_t n, bool inverse) {
         j ^= bit;
         if (i < j) std::swap(a[i], a[j]);
     }
-    // Butterflies. Twiddles are recomputed per stage from std::polar rather than advanced
-    // multiplicatively: the incremental form accumulates phase error over long transforms, and
-    // this has to land inside a 1e-4 parity tolerance after a full convolution.
+    // Butterflies, reading the precomputed twiddle table with stride n/len.
     const std::vector<std::complex<double>>& tw = twiddles(n);
     for (size_t len = 2; len <= n; len <<= 1) {
         const size_t half = len >> 1;
@@ -81,16 +83,47 @@ void fft_1d(std::complex<double>* a, size_t n, bool inverse) {
     }
 }
 
+namespace {
+// Split [0,n) into contiguous chunks across the engine's configured worker count
+// and run f(begin,end) on each. Boundaries are a pure function of (n, threads) and
+// every chunk touches a disjoint set of rows/columns, so the OUTPUT is identical
+// for any thread count — the invariance the parity gate requires.
+//
+// spk::parallel_for is not used here on purpose: its kParallelMinChunk is tuned for
+// per-PIXEL bodies, and one item here is an entire 1D transform. A 4096-row image
+// is only 4096 items, which that heuristic would collapse to a single thread.
+template <typename F>
+void run_chunked(size_t n, const F& f) {
+    const int nthreads = std::max(1, parallel_num_threads());
+    if (nthreads <= 1 || n < 2) { f(0, n); return; }
+    const size_t chunk = (n + nthreads - 1) / nthreads;
+    std::vector<std::thread> workers;
+    for (int t = 1; t < nthreads; ++t) {
+        const size_t b = std::min(n, chunk * static_cast<size_t>(t));
+        const size_t e = std::min(n, b + chunk);
+        if (b < e) workers.emplace_back([&f, b, e] { f(b, e); });
+    }
+    f(0, std::min(n, chunk));                 // first chunk on the calling thread
+    for (std::thread& t : workers) t.join();
+}
+}  // namespace
+
 void fft_2d(std::complex<double>* a, size_t w, size_t h, bool inverse) {
     // Rows.
-    for (size_t y = 0; y < h; ++y) fft_1d(a + y * w, w, inverse);
+    run_chunked(h, [&](size_t y0, size_t y1) {
+        for (size_t y = y0; y < y1; ++y) fft_1d(a + y * w, w, inverse);
+    });
     // Columns, gathered into a contiguous scratch so fft_1d sees unit stride.
-    std::vector<std::complex<double>> col(h);
-    for (size_t x = 0; x < w; ++x) {
-        for (size_t y = 0; y < h; ++y) col[y] = a[y * w + x];
-        fft_1d(col.data(), h, inverse);
-        for (size_t y = 0; y < h; ++y) a[y * w + x] = col[y];
-    }
+    // The scratch is per-worker; the twiddle cache in fft_1d is thread_local, so
+    // each worker builds it once.
+    run_chunked(w, [&](size_t x0, size_t x1) {
+        std::vector<std::complex<double>> col(h);
+        for (size_t x = x0; x < x1; ++x) {
+            for (size_t y = 0; y < h; ++y) col[y] = a[y * w + x];
+            fft_1d(col.data(), h, inverse);
+            for (size_t y = 0; y < h; ++y) a[y * w + x] = col[y];
+        }
+    });
 }
 
 void convolve_same_2d(const double* img, size_t iw, size_t ih,
