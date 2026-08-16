@@ -54,6 +54,35 @@ void convolve_same_2d(const double* img, size_t iw, size_t ih,
                       const double* kern, size_t kw, size_t kh,
                       double* out);
 
+/**
+ * Overlap-add convolution returning the 'valid' region: `out` is
+ * (iw-kw+1) x (ih-kh+1). This is the shape the diffusion stage wants — it
+ * reflect-pads the image itself (numpy mode='reflect') and then takes the part of
+ * the convolution that used no zero padding.
+ *
+ * MEMORY IS WHY THIS EXISTS. [convolve_same_2d] transforms the whole frame at
+ * once, and at capture resolution that is not survivable: measured on the real
+ * export path (4080x3060, 35 mm format => 8.578 um/px),
+ *
+ *     family          radius    ks     pow2      per plane
+ *     Glimmerglass       607  1215     8192        1.07 GB
+ *     BlackProMist       886  1773     8192        1.07 GB
+ *     ProMist           1516  3033    16384        4.29 GB
+ *     Cinebloom         1529  3059    16384        4.29 GB   (radius capped)
+ *
+ * with at least two planes live. Overlap-add instead works in power-of-two tiles,
+ * so the footprint is O(tile^2) REGARDLESS of frame size: a 4096 tile is 268 MB
+ * per plane, 537 MB for the two live planes, and needs 4 tiles (Glimmerglass) to
+ * 42 tiles (Cinebloom) for a full frame.
+ *
+ * `tile` must be a power of two and STRICTLY GREATER than both kw and kh — the
+ * per-tile useful output is tile-kw+1, so a tile at or below the kernel size makes
+ * no progress. Returns without writing anything if that does not hold.
+ */
+void convolve_valid_2d_ola(const double* img, size_t iw, size_t ih,
+                           const double* kern, size_t kw, size_t kh,
+                           double* out, size_t tile);
+
 }  // namespace spk
 
 #endif  // SPK_KERNELS_FFT_H

@@ -674,3 +674,44 @@ DELIBERATELY NOT WIRED IN, so it cannot disturb the parity suite until verified 
 
 Add `kernels/fft.cpp` to the CMake source list and to the host-test SRC glob (it is already covered
 by `kernels/*.cpp` in both).
+
+### §9f Memory measured — §9d's figure was wrong for half the families
+
+§9d's "8192 x 8192 = 1.07 GB per plane" holds only for the two SMALL families.
+Measured against the real export path (4080x3060 pre-crop, film_format_mm 35 =>
+8.578 um/px, radius cap = min(h,w)/2-1 = 1529):
+
+    family          bloom um   radius   capped     ks   lin conv   pow2   GB/plane
+    Glimmerglass         650      607      607   1215       6508   8192       1.07
+    BlackProMist         950      886      886   1773       7624   8192       1.07
+    ProMist             1625     1516     1516   3033      10144  16384       4.29
+    Cinebloom           2500     2332     1529   3059      10196  16384       4.29
+
+ProMist and Cinebloom need **16384 x 16384 = 4.29 GB per plane**, four times the
+documented figure, and at least two planes are live. Full-frame FFT is dead for
+every family, not just marginal for the big ones.
+
+Two earlier claims corrected: bloom_max_lambda_um uses GroupCfg.spread (the 2nd
+field, 2.5), not alpha (the 4th) — and only CINEBLOOM hits the radius cap; ProMist
+at 1516 sits just under 1529.
+
+**Overlap-add is therefore mandatory, not an option.** `spk::convolve_valid_2d_ola`
+(kernels/fft.cpp) is built and verified: max |ola - direct| = 1.78e-15 across a
+30-tile case, twelve orders inside the 1e-4 tolerance. Its footprint is O(tile^2)
+regardless of frame size:
+
+    tile 4096: 268 MB/plane, 537 MB for the two live planes
+      Glimmerglass  ks=1215  useful=2882  ->  4 tiles
+      BlackProMist  ks=1773  useful=2324  ->  9 tiles
+      ProMist       ks=3033  useful=1064  -> 42 tiles
+      Cinebloom     ks=3059  useful=1038  -> 42 tiles
+
+It returns the 'valid' region, which is exactly what apply_diffusion_filter_um
+wants: that function reflect-pads to (w+2r, h+2r) itself and then takes the part
+of the convolution that used no zero padding.
+
+Still to do: replace the nested loop in apply_diffusion_filter_um with a
+convolve_valid_2d_ola call per channel (everything before it — the PSF build and
+the reflect pad — is correct and stays), re-enable the export block in
+CaptureProcessing, and run the suite. test_diffusion passes today with the new
+file in the source set (nothing calls it yet).

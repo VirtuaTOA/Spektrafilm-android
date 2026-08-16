@@ -91,4 +91,49 @@ void convolve_same_2d(const double* img, size_t iw, size_t ih,
             out[y * iw + x] = A[(y + oy) * fw + (x + ox)].real();
 }
 
+void convolve_valid_2d_ola(const double* img, size_t iw, size_t ih,
+                           const double* kern, size_t kw, size_t kh,
+                           double* out, size_t tile) {
+    if (iw < kw || ih < kh || kw == 0 || kh == 0) return;
+    if (tile <= kw || tile <= kh || tile != next_pow2(tile)) return;
+    const size_t ow = iw - kw + 1, oh = ih - kh + 1;
+    const size_t lx = tile - kw + 1, ly = tile - kh + 1;  // useful step per tile
+    std::fill(out, out + ow * oh, 0.0);
+
+    // Kernel spectrum: computed once and reused for every tile.
+    std::vector<std::complex<double>> K(tile * tile, std::complex<double>(0.0, 0.0));
+    for (size_t y = 0; y < kh; ++y)
+        for (size_t x = 0; x < kw; ++x) K[y * tile + x] = kern[y * kw + x];
+    fft_2d(K.data(), tile, tile, false);
+
+    std::vector<std::complex<double>> B(tile * tile);
+    for (size_t by = 0; by < ih; by += ly) {
+        for (size_t bx = 0; bx < iw; bx += lx) {
+            std::fill(B.begin(), B.end(), std::complex<double>(0.0, 0.0));
+            const size_t bh = std::min(ly, ih - by), bw = std::min(lx, iw - bx);
+            for (size_t y = 0; y < bh; ++y)
+                for (size_t x = 0; x < bw; ++x)
+                    B[y * tile + x] = img[(by + y) * iw + bx + x];
+            fft_2d(B.data(), tile, tile, false);
+            for (size_t i = 0; i < B.size(); ++i) B[i] *= K[i];
+            fft_2d(B.data(), tile, tile, true);
+            // This tile's result sits at offset (by, bx) in the full linear
+            // convolution; the valid window starts at (kh-1, kw-1) of that.
+            for (size_t y = 0; y < tile; ++y) {
+                const size_t fy = by + y;
+                if (fy < kh - 1) continue;
+                const size_t oy = fy - (kh - 1);
+                if (oy >= oh) break;
+                for (size_t x = 0; x < tile; ++x) {
+                    const size_t fx = bx + x;
+                    if (fx < kw - 1) continue;
+                    const size_t ox = fx - (kw - 1);
+                    if (ox >= ow) break;
+                    out[oy * ow + ox] += B[y * tile + x].real();
+                }
+            }
+        }
+    }
+}
+
 }  // namespace spk
