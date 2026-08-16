@@ -436,6 +436,22 @@ void apply_diffusion_filter_um(double* raw, int w, int h,
     // not a defect in this path.
     size_t tile = spk::next_pow2(static_cast<size_t>(ks) + 1);
     if (tile * 2 <= 4096) tile *= 2;
+
+    // FAST PATH: one mixed-radix circular transform over the whole padded plane.
+    // The caller has already reflect-padded by the kernel radius, so a circular
+    // convolution is exact over the valid window (wraparound only reaches indices
+    // below ks-1, and the window starts at ks-1) — which means the transform is
+    // sized to the PADDED plane, not padded+kernel. Combined with mixed-radix
+    // sizing that is ~12x less work than the overlap-add form at diffusion's
+    // kernel sizes, where a 4096 tile keeps only ~6% of each transform.
+    //
+    // Falls back to overlap-add when the two complex planes would not fit: OLA's
+    // footprint is O(tile^2) regardless of frame size, so it always fits.
+    const size_t fw = spk::next_fast_len(static_cast<size_t>(pw));
+    const size_t fh = spk::next_fast_len(static_cast<size_t>(ph));
+    const size_t single_bytes = fw * fh * sizeof(std::complex<double>) * 2;
+    constexpr size_t kMaxSinglePassBytes = 1500ull * 1024 * 1024;
+    const bool use_single_pass = single_bytes <= kMaxSinglePassBytes;
     for (int c = 0; c < 3; ++c) {
         for (int yy = 0; yy < ph; ++yy) {
             int sy = reflect(yy - radius, h);
@@ -457,10 +473,17 @@ void apply_diffusion_filter_um(double* raw, int w, int h,
         // §9c. FFT convolution is mathematically identical (the oracle itself uses
         // scipy.signal.fftconvolve; direct and FFT agree to ~1e-16, twelve orders
         // inside the 1e-4 parity tolerance) and turns hours into seconds.
-        spk::convolve_valid_2d_ola(padded.data(), static_cast<size_t>(pw),
-                                   static_cast<size_t>(ph), kern.data(),
-                                   static_cast<size_t>(ks), static_cast<size_t>(ks),
-                                   chan.data(), tile);
+        if (use_single_pass) {
+            spk::convolve_valid_2d_circular(padded.data(), static_cast<size_t>(pw),
+                                            static_cast<size_t>(ph), kern.data(),
+                                            static_cast<size_t>(ks),
+                                            static_cast<size_t>(ks), chan.data());
+        } else {
+            spk::convolve_valid_2d_ola(padded.data(), static_cast<size_t>(pw),
+                                       static_cast<size_t>(ph), kern.data(),
+                                       static_cast<size_t>(ks),
+                                       static_cast<size_t>(ks), chan.data(), tile);
+        }
         for (size_t i = 0; i < chan.size(); ++i)
             blurred[i * 3 + c] = chan[i];
     }

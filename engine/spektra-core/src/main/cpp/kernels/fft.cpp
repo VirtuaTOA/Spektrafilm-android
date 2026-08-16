@@ -199,4 +199,160 @@ void convolve_valid_2d_ola(const double* img, size_t iw, size_t ih,
     }
 }
 
+// ---------------------------------------------------------------------------
+// Mixed-radix (2/3/5/7) transform + single-pass circular convolution.
+// ---------------------------------------------------------------------------
+
+size_t next_fast_len(size_t n) {
+    if (n <= 1) return 1;
+    for (size_t m = n;; ++m) {
+        size_t t = m;
+        for (size_t r : {2u, 3u, 5u, 7u})
+            while (t % r == 0) t /= r;
+        if (t == 1) return m;
+    }
+}
+
+namespace {
+
+// Full twiddle ring for size N: exp(-2*pi*i*j/N), j < N. One table serves every
+// recursion level: a sub-transform of size n reads it with stride N/n, and the
+// r-point butterfly reads it with stride N/r. Entries are direct std::polar calls,
+// so accuracy matches evaluating each twiddle individually.
+const std::vector<std::complex<double>>& ring(size_t N) {
+    thread_local size_t cached = 0;
+    thread_local std::vector<std::complex<double>> w;
+    if (cached != N) {
+        w.resize(N);
+        for (size_t j = 0; j < N; ++j)
+            w[j] = std::polar(1.0, -2.0 * M_PI * static_cast<double>(j) /
+                                       static_cast<double>(N));
+        cached = N;
+    }
+    return w;
+}
+
+size_t smallest_factor(size_t n) {
+    for (size_t r : {2u, 3u, 5u, 7u})
+        if (n % r == 0) return r;
+    return n;  // prime > 7: handled by a direct O(n^2) DFT below
+}
+
+// Recursive decimation-in-time. `a` is the strided input, `out` the contiguous
+// destination of length n. `step` = N/n is the twiddle stride for this level.
+void fft_rec(const std::complex<double>* a, size_t stride, size_t n,
+             std::complex<double>* out, const std::vector<std::complex<double>>& W,
+             size_t N, bool inv) {
+    if (n == 1) { out[0] = a[0]; return; }
+    const size_t r = smallest_factor(n);
+    if (r == n) {                       // prime factor > 7 — direct DFT
+        const size_t stepd = N / n;
+        for (size_t k = 0; k < n; ++k) {
+            std::complex<double> s(0.0, 0.0);
+            for (size_t j = 0; j < n; ++j) {
+                std::complex<double> t = W[(j * k * stepd) % N];
+                s += a[j * stride] * (inv ? std::conj(t) : t);
+            }
+            out[k] = s;
+        }
+        return;
+    }
+    const size_t m = n / r;
+    for (size_t j = 0; j < r; ++j)
+        fft_rec(a + j * stride, stride * r, m, out + j * m, W, N, inv);
+
+    const size_t stepj = N / n;
+    // Radix-2 fast path. Sizes here are overwhelmingly 2^a * (one small odd
+    // factor), so this is the hot case: it drops the generic r-point DFT, the
+    // r-wide temporary, and both modulo operations (the j=1 twiddle index
+    // k*stepj is always < N).
+    if (r == 2) {
+        for (size_t k = 0; k < m; ++k) {
+            std::complex<double> t = W[k * stepj];
+            if (inv) t = std::conj(t);
+            const std::complex<double> u0 = out[k];
+            const std::complex<double> u1 = out[m + k] * t;
+            out[k]     = u0 + u1;
+            out[m + k] = u0 - u1;
+        }
+        return;
+    }
+
+    // Combine in place: position k of each of the r sub-results maps onto the r
+    // outputs {k, k+m, ..., k+(r-1)m}, and those are exactly the slots being read,
+    // so only an r-wide temporary is needed.
+    const size_t step = N / n;
+    const size_t rstep = N / r;
+    std::complex<double> u[8];
+    for (size_t k = 0; k < m; ++k) {
+        for (size_t j = 0; j < r; ++j) {
+            // j*k*step < N strictly ((r-1)(m-1) < rm), so no modulo is needed.
+            std::complex<double> t = W[j * k * step];
+            u[j] = out[j * m + k] * (inv ? std::conj(t) : t);
+        }
+        for (size_t q = 0; q < r; ++q) {
+            std::complex<double> s(0.0, 0.0);
+            for (size_t j = 0; j < r; ++j) {
+                std::complex<double> t = W[(j * q * rstep) % N];
+                s += u[j] * (inv ? std::conj(t) : t);
+            }
+            out[q * m + k] = s;
+        }
+    }
+}
+
+}  // namespace
+
+void fft_1d_mixed(std::complex<double>* a, size_t n, bool inverse) {
+    if (n < 2) return;
+    const std::vector<std::complex<double>>& W = ring(n);
+    thread_local std::vector<std::complex<double>> buf;
+    buf.assign(a, a + n);
+    fft_rec(buf.data(), 1, n, a, W, n, inverse);
+    if (inverse) {
+        const double s = 1.0 / static_cast<double>(n);
+        for (size_t i = 0; i < n; ++i) a[i] *= s;
+    }
+}
+
+void fft_2d_mixed(std::complex<double>* a, size_t w, size_t h, bool inverse) {
+    run_chunked(h, [&](size_t y0, size_t y1) {
+        for (size_t y = y0; y < y1; ++y) fft_1d_mixed(a + y * w, w, inverse);
+    });
+    run_chunked(w, [&](size_t x0, size_t x1) {
+        std::vector<std::complex<double>> col(h);
+        for (size_t x = x0; x < x1; ++x) {
+            for (size_t y = 0; y < h; ++y) col[y] = a[y * w + x];
+            fft_1d_mixed(col.data(), h, inverse);
+            for (size_t y = 0; y < h; ++y) a[y * w + x] = col[y];
+        }
+    });
+}
+
+void convolve_valid_2d_circular(const double* img, size_t iw, size_t ih,
+                                const double* kern, size_t kw, size_t kh,
+                                double* out) {
+    if (iw < kw || ih < kh || kw == 0 || kh == 0) return;
+    const size_t ow = iw - kw + 1, oh = ih - kh + 1;
+    // Q >= iw suffices: circular aliasing only reaches indices below kw-1, and the
+    // valid window starts at exactly kw-1. Same argument per axis.
+    const size_t fw = next_fast_len(iw), fh = next_fast_len(ih);
+
+    std::vector<std::complex<double>> A(fw * fh, std::complex<double>(0.0, 0.0));
+    std::vector<std::complex<double>> B(fw * fh, std::complex<double>(0.0, 0.0));
+    for (size_t y = 0; y < ih; ++y)
+        for (size_t x = 0; x < iw; ++x) A[y * fw + x] = img[y * iw + x];
+    for (size_t y = 0; y < kh; ++y)
+        for (size_t x = 0; x < kw; ++x) B[y * fw + x] = kern[y * kw + x];
+
+    fft_2d_mixed(A.data(), fw, fh, false);
+    fft_2d_mixed(B.data(), fw, fh, false);
+    for (size_t i = 0; i < A.size(); ++i) A[i] *= B[i];
+    fft_2d_mixed(A.data(), fw, fh, true);
+
+    for (size_t y = 0; y < oh; ++y)
+        for (size_t x = 0; x < ow; ++x)
+            out[y * ow + x] = A[(y + kh - 1) * fw + (x + kw - 1)].real();
+}
+
 }  // namespace spk

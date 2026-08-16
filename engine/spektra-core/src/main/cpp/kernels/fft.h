@@ -83,6 +83,45 @@ void convolve_valid_2d_ola(const double* img, size_t iw, size_t ih,
                            const double* kern, size_t kw, size_t kh,
                            double* out, size_t tile);
 
+/** Smallest m >= n whose only prime factors are 2, 3, 5, 7 (what scipy calls a
+ *  "fast length"). Radix-2 alone rounds 7112 up to 8192; this returns 7168. */
+size_t next_fast_len(size_t n);
+
+/** Mixed-radix (2/3/5/7) 1D FFT, in place. n must be a next_fast_len value. */
+void fft_1d_mixed(std::complex<double>* a, size_t n, bool inverse);
+
+/** Mixed-radix 2D FFT over a `h x w` row-major plane, in place, threaded. */
+void fft_2d_mixed(std::complex<double>* a, size_t w, size_t h, bool inverse);
+
+/**
+ * SINGLE-PASS 'valid' convolution — the fast path, and the one that matches what
+ * the desktop client does.
+ *
+ * `out` is (iw-kw+1) x (ih-kh+1), same contract as [convolve_valid_2d_ola].
+ *
+ * Two things make this ~12x cheaper than the overlap-add form at diffusion's
+ * kernel sizes:
+ *
+ *  1. NO TILING. Overlap-add keeps only tile-kw+1 useful pixels per transform, and
+ *     at ks~3000 with a 4096 tile that is 6.7% — 42 tiles for one frame. One pass
+ *     wastes nothing.
+ *  2. NO DOUBLED PADDING. The caller has already reflect-padded by the kernel
+ *     radius, so a CIRCULAR convolution of size >= iw is exact over the valid
+ *     region: wraparound only corrupts indices below kw-1, and the valid region
+ *     starts exactly at kw-1. So the transform is sized to iw, not iw+kw-1 —
+ *     a 4x area saving over treating it as a general linear convolution.
+ *
+ * Mixed-radix sizing then avoids the power-of-two jump on top of that (7112 ->
+ * 7168 rather than 8192).
+ *
+ * Cost: two complex planes of next_fast_len(iw) x next_fast_len(ih). Caller must
+ * check that against its memory budget and fall back to [convolve_valid_2d_ola]
+ * when it does not fit.
+ */
+void convolve_valid_2d_circular(const double* img, size_t iw, size_t ih,
+                                const double* kern, size_t kw, size_t kh,
+                                double* out);
+
 }  // namespace spk
 
 #endif  // SPK_KERNELS_FFT_H
