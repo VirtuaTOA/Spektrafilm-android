@@ -320,6 +320,10 @@ void fft_2d_mixed(std::complex<double>* a, size_t w, size_t h, bool inverse) {
         for (size_t y = y0; y < y1; ++y) fft_1d_mixed(a + y * w, w, inverse);
     });
     run_chunked(w, [&](size_t x0, size_t x1) {
+        // One column at a time on purpose. A blocked variant (8 columns together,
+        // to make each row read contiguous) was MEASURED SLOWER: the per-thread
+        // buffer grows 8x to ~780 KB and stops fitting L2, which costs more than
+        // the strided gather saves. Do not "optimise" this without benchmarking.
         std::vector<std::complex<double>> col(h);
         for (size_t x = x0; x < x1; ++x) {
             for (size_t y = 0; y < h; ++y) col[y] = a[y * w + x];
