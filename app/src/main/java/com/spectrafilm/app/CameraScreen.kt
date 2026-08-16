@@ -364,10 +364,26 @@ private fun CameraScreenSupported(
     // TRADE-OFF, deliberate: this gives up the enforced-shutter behaviour. Some regions
     // (notably JP/KR) legally require an audible shutter, and shipping there would mean
     // removing this gate.
-    val shutterSound = remember { android.media.MediaActionSound() }
+    // SoundPool over a bundled click rather than MediaActionSound, ONLY because
+    // MediaActionSound has no volume control — SoundPool.play() takes a 0..1 gain, so
+    // the shutter can be both halved and made to track the slider. res/raw/shutter_click
+    // is a synthesised two-curtain click (bright short burst, duller longer one 52 ms
+    // later); the device had no shutter sound under /system/media/audio/ui to borrow.
+    val soundPool = remember {
+        android.media.SoundPool.Builder()
+            .setMaxStreams(2)
+            .setAudioAttributes(
+                android.media.AudioAttributes.Builder()
+                    .setUsage(android.media.AudioAttributes.USAGE_ASSISTANCE_SONIFICATION)
+                    .setContentType(android.media.AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                    .build(),
+            )
+            .build()
+    }
+    var shutterSoundId by remember { mutableIntStateOf(0) }
     DisposableEffect(Unit) {
-        shutterSound.load(android.media.MediaActionSound.SHUTTER_CLICK)
-        onDispose { shutterSound.release() }
+        shutterSoundId = soundPool.load(ctx, R.raw.shutter_click, 1)
+        onDispose { soundPool.release() }
     }
     val audioManager = remember(ctx) {
         ctx.getSystemService(android.content.Context.AUDIO_SERVICE) as android.media.AudioManager
@@ -401,11 +417,19 @@ private fun CameraScreenSupported(
             android.media.AudioManager.RINGER_MODE_SILENT -> Unit
             // STREAM_SYSTEM is the shutter's stream. At 0 the user has muted system
             // sounds even though the ringer is nominally "normal", so stay quiet.
-            else -> if (audioManager.getStreamVolume(
+            // Otherwise track the slider AND halve it: a shutter should be audible
+            // feedback, not the loudest thing the phone does.
+            else -> {
+                val max = audioManager.getStreamMaxVolume(
                     android.media.AudioManager.STREAM_SYSTEM,
-                ) > 0
-            ) {
-                shutterSound.play(android.media.MediaActionSound.SHUTTER_CLICK)
+                )
+                val cur = audioManager.getStreamVolume(
+                    android.media.AudioManager.STREAM_SYSTEM,
+                )
+                if (cur > 0 && max > 0 && shutterSoundId != 0) {
+                    val gain = 0.5f * (cur.toFloat() / max.toFloat())
+                    soundPool.play(shutterSoundId, gain, gain, 1, 0, 1f)
+                }
             }
         }
     }
