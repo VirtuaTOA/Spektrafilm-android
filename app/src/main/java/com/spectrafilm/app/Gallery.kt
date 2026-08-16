@@ -250,11 +250,13 @@ object Gallery {
     data class Info(
         val stock: String?,
         val shutter: String?,
+        val iso: String?,
         val focal: String?,
         val taken: String?,
     ) {
         val isEmpty: Boolean
-            get() = stock == null && shutter == null && focal == null && taken == null
+            get() = stock == null && shutter == null && iso == null &&
+                focal == null && taken == null
     }
 
     /**
@@ -273,6 +275,16 @@ object Gallery {
                 shutter = e.getAttribute(
                     androidx.exifinterface.media.ExifInterface.TAG_EXPOSURE_TIME,
                 )?.toDoubleOrNull()?.let { formatShutter(it) },
+                // TAG_PHOTOGRAPHIC_SENSITIVITY is the current EXIF 2.3 name; older writers
+                // (and the DNGs this pipeline copies from) may only carry the deprecated
+                // TAG_ISO_SPEED_RATINGS, so fall back rather than showing nothing.
+                iso = (
+                    e.getAttribute(
+                        androidx.exifinterface.media.ExifInterface.TAG_PHOTOGRAPHIC_SENSITIVITY,
+                    ) ?: e.getAttribute(
+                        androidx.exifinterface.media.ExifInterface.TAG_ISO_SPEED_RATINGS,
+                    )
+                    )?.toIntOrNull()?.let { "ISO $it" },
                 focal = e.getAttribute(
                     androidx.exifinterface.media.ExifInterface.TAG_FOCAL_LENGTH_IN_35MM_FILM,
                 )?.toIntOrNull()?.let { "${it}mm" },
@@ -280,8 +292,8 @@ object Gallery {
                     androidx.exifinterface.media.ExifInterface.TAG_DATETIME_ORIGINAL,
                 )?.let { parseExifDate(it) } ?: formatTaken(item.dateAdded * 1000L),
             )
-        } ?: Info(null, null, null, formatTaken(item.dateAdded * 1000L))
-    }.getOrElse { Info(null, null, null, null) }
+        } ?: Info(null, null, null, null, formatTaken(item.dateAdded * 1000L))
+    }.getOrElse { Info(null, null, null, null, null) }
 
     /** Photographers read shutter speeds as fractions, not decimals: 0.008s means nothing. */
     private fun formatShutter(seconds: Double): String = when {

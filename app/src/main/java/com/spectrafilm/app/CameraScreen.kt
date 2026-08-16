@@ -771,6 +771,7 @@ private fun CameraScreenSupported(
                                 stockName = stock.name,
                                 equivFocalMm = lens.equivFocalMm,
                                 shutterNs = session.lastExposureNs,
+                                iso = session.lastIso,
                                 diffusionStrength = FILTER_GRADES[filterGrade].second,
                                 diffusionFamily = FILTER_FAMILIES[filterFamily].second,
                             ),

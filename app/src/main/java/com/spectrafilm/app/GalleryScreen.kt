@@ -472,7 +472,7 @@ private fun PhotoInfo(item: Gallery.Item, aspect: Float) {
                     val style = readoutTextStyle()
                     // Nulls are skipped rather than shown as blanks: a frame shot before the app
                     // recorded metadata should look sparse, not broken.
-                    listOfNotNull(i.stock, i.shutter, i.focal, i.taken).forEach { line ->
+                    listOfNotNull(i.stock, i.shutter, i.iso, i.focal, i.taken).forEach { line ->
                         Text(
                             line,
                             style = style,

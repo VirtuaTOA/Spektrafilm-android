@@ -267,6 +267,9 @@ class CameraSession(
      * frame that was captured, and it removes any dependence on a DNG parser recognising the tag.
      */
     @Volatile var lastExposureNs: Long? = null
+
+    /** ISO the sensor actually used, from the CaptureResult (see lastExposureNs). */
+    @Volatile var lastIso: Int? = null
         private set
     private var captureChars: CameraCharacteristics? = null
     // A capture is an Image and a TotalCaptureResult that arrive on different callbacks;
@@ -714,6 +717,7 @@ class CameraSession(
                     result: TotalCaptureResult,
                 ) {
                     lastExposureNs = result.get(CaptureResult.SENSOR_EXPOSURE_TIME)
+                    lastIso = result.get(CaptureResult.SENSOR_SENSITIVITY)
                     pendingResult = result
                     tryWriteDng()
                 }

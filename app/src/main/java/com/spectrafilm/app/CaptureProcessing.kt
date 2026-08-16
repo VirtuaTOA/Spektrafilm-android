@@ -51,6 +51,7 @@ data class CaptureJob(
     val equivFocalMm: Int? = null,
     /** Exposure time in nanoseconds, from the still's own CaptureResult. */
     val shutterNs: Long? = null,
+    val iso: Int? = null,
     /** Black Pro-Mist strength, or null for no filter. Carried HERE because the render rebuilds
      *  params from the preset id alone — a filter chosen in the viewfinder would otherwise never
      *  reach the export. */
@@ -65,6 +66,7 @@ data class CaptureJob(
         .put("stockName", stockName ?: JSONObject.NULL)
         .put("equivFocalMm", equivFocalMm ?: JSONObject.NULL)
         .put("shutterNs", shutterNs ?: JSONObject.NULL)
+        .put("iso", iso ?: JSONObject.NULL)
         .put("diffusion", diffusionStrength?.toDouble() ?: JSONObject.NULL)
         .put("diffusionFamily", diffusionFamily ?: JSONObject.NULL)
 
@@ -78,6 +80,7 @@ data class CaptureJob(
                 stockName = o.optString("stockName").takeIf { it.isNotBlank() && it != "null" },
                 equivFocalMm = o.optInt("equivFocalMm", -1).takeIf { it > 0 },
                 shutterNs = o.optLong("shutterNs", -1L).takeIf { it > 0L },
+                iso = o.optInt("iso", -1).takeIf { it > 0 },
                 diffusionStrength = o.optDouble("diffusion", -1.0).takeIf { it > 0.0 }?.toFloat(),
                 diffusionFamily = o.optString("diffusionFamily")
                     .takeIf { it.isNotBlank() && it != "null" },
@@ -197,6 +200,12 @@ private fun captureExif(job: CaptureJob): SourceExif {
     }
     // From the CaptureResult, not the DNG: reading it back out of the DNG did not work in
     // practice, and this is the same number the sensor actually used.
+    // Same reasoning as the shutter above: taken from the CaptureResult rather than the
+    // DNG. Verified empirically — exports carried NO ISO tag when this relied on the DNG.
+    job.iso?.let {
+        tags[androidx.exifinterface.media.ExifInterface.TAG_PHOTOGRAPHIC_SENSITIVITY] =
+            it.toString()
+    }
     job.shutterNs?.let {
         tags[androidx.exifinterface.media.ExifInterface.TAG_EXPOSURE_TIME] =
             (it / 1_000_000_000.0).toString()
