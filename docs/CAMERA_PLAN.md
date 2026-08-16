@@ -715,3 +715,47 @@ convolve_valid_2d_ola call per channel (everything before it — the PSF build a
 the reflect pad — is correct and stays), re-enable the export block in
 CaptureProcessing, and run the suite. test_diffusion passes today with the new
 file in the source set (nothing calls it yet).
+
+### §9g CORRECTION — the "4.29 GB" was our own artifact, not the problem's size
+
+§9f (and §9d before it) reported that ProMist/Cinebloom need 4.29 GB per plane and
+concluded a full-frame FFT is impossible. **That conclusion was wrong**, and the
+evidence against it was in plain sight: the desktop client renders a ProMist frame
+on an 8 GB MacBook Air in about a second.
+
+Measured properly, per plane for ProMist/Cinebloom:
+
+    radix-2, complex-to-complex, f64   (ours)     16384^2   4.29 GB
+    mixed-radix 2/3/5/7, real-input, f64 (scipy)  10206^2   0.83 GB
+    mixed-radix, real-input, f32                  10206^2   0.42 GB
+
+Two independent 2x-ish errors multiplying to 5.2x:
+
+  1. Radix-2 rounds the needed 10206 up to 16384 — 2.6x more points. scipy uses
+     next_fast_len (2/3/5/7) and lands on 10206.
+  2. Both operands are REAL, so only half the spectrum is needed. scipy's
+     fftconvolve uses rfftn/irfftn. We used a full complex transform.
+
+Overlap-add is also the wrong primary shape here. With these kernel sizes the
+useful output per tile is tiny, so most of each transform is discarded:
+
+    family        tile 4096   tile 8192
+    Glimmerglass      49.5%       72.6%
+    BlackProMist      32.2%       61.4%
+    ProMist            6.7%       39.7%
+    Cinebloom          6.4%       39.3%
+
+At tile 4096 the big families keep 6% of every transform — roughly 15x more
+compute than a single properly-sized pass. That would have been slow on device and
+easy to misattribute to the phone.
+
+THE LESSON: the radix-2 FFT was written first because it is the easy one, and then
+the architecture was designed around ITS limits and those limits were written into
+this doc as if they were the problem's. They were not. Question the tool before
+concluding the task is impossible.
+
+CORRECTED PLAN: mixed-radix (2/3/5/7) + real-input transform, one pass per channel,
+f32 unless parity says otherwise (direct-vs-FFT headroom is ~1e-16 against a 1e-4
+tolerance, so there is a lot of room — but MEASURE it, do not assume).
+spk::convolve_valid_2d_ola stays: it is verified correct (1.78e-15 over 30 tiles)
+and is a real fallback for a memory-constrained device, just not the main path.
