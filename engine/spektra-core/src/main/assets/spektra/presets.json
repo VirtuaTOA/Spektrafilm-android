@@ -29,7 +29,8 @@
         },
         "scanner": {
           "whiteCorrection": true,
-          "blackCorrection": true
+          "blackCorrection": true,
+          "blackLevel": 0.04
         }
       }
     },
@@ -61,7 +62,8 @@
         },
         "scanner": {
           "whiteCorrection": true,
-          "blackCorrection": true
+          "blackCorrection": true,
+          "blackLevel": 0.04
         }
       }
     },
@@ -93,7 +95,8 @@
         },
         "scanner": {
           "whiteCorrection": true,
-          "blackCorrection": true
+          "blackCorrection": true,
+          "blackLevel": 0.04
         }
       }
     },
@@ -125,7 +128,8 @@
         },
         "scanner": {
           "whiteCorrection": true,
-          "blackCorrection": true
+          "blackCorrection": true,
+          "blackLevel": 0.04
         }
       }
     },
@@ -157,7 +161,8 @@
         },
         "scanner": {
           "whiteCorrection": true,
-          "blackCorrection": true
+          "blackCorrection": true,
+          "blackLevel": 0.04
         }
       }
     },
@@ -189,7 +194,8 @@
         },
         "scanner": {
           "whiteCorrection": true,
-          "blackCorrection": true
+          "blackCorrection": true,
+          "blackLevel": 0.04
         }
       }
     },
@@ -221,7 +227,8 @@
         },
         "scanner": {
           "whiteCorrection": true,
-          "blackCorrection": true
+          "blackCorrection": true,
+          "blackLevel": 0.04
         }
       }
     },
@@ -253,7 +260,8 @@
         },
         "scanner": {
           "whiteCorrection": true,
-          "blackCorrection": true
+          "blackCorrection": true,
+          "blackLevel": 0.04
         }
       }
     },
@@ -285,7 +293,8 @@
         },
         "scanner": {
           "whiteCorrection": true,
-          "blackCorrection": true
+          "blackCorrection": true,
+          "blackLevel": 0.04
         }
       }
     },
@@ -317,7 +326,8 @@
         },
         "scanner": {
           "whiteCorrection": true,
-          "blackCorrection": true
+          "blackCorrection": true,
+          "blackLevel": 0.04
         },
         "creativeWb": {
           "balanceToFilmStock": true
@@ -352,7 +362,8 @@
         },
         "scanner": {
           "whiteCorrection": true,
-          "blackCorrection": true
+          "blackCorrection": true,
+          "blackLevel": 0.04
         }
       }
     },
@@ -384,7 +395,8 @@
         },
         "scanner": {
           "whiteCorrection": true,
-          "blackCorrection": true
+          "blackCorrection": true,
+          "blackLevel": 0.04
         }
       }
     },
@@ -416,7 +428,8 @@
         },
         "scanner": {
           "whiteCorrection": true,
-          "blackCorrection": true
+          "blackCorrection": true,
+          "blackLevel": 0.04
         },
         "creativeWb": {
           "balanceToFilmStock": true
@@ -451,7 +464,8 @@
         },
         "scanner": {
           "whiteCorrection": true,
-          "blackCorrection": true
+          "blackCorrection": true,
+          "blackLevel": 0.04
         }
       }
     },
@@ -483,7 +497,8 @@
         },
         "scanner": {
           "whiteCorrection": true,
-          "blackCorrection": true
+          "blackCorrection": true,
+          "blackLevel": 0.04
         }
       }
     },
@@ -515,7 +530,8 @@
         },
         "scanner": {
           "whiteCorrection": true,
-          "blackCorrection": true
+          "blackCorrection": true,
+          "blackLevel": 0.04
         }
       }
     },
@@ -547,7 +563,8 @@
         },
         "scanner": {
           "whiteCorrection": true,
-          "blackCorrection": true
+          "blackCorrection": true,
+          "blackLevel": 0.04
         }
       }
     },
@@ -579,7 +596,8 @@
         },
         "scanner": {
           "whiteCorrection": true,
-          "blackCorrection": true
+          "blackCorrection": true,
+          "blackLevel": 0.04
         }
       }
     },
@@ -611,7 +629,8 @@
         },
         "scanner": {
           "whiteCorrection": true,
-          "blackCorrection": true
+          "blackCorrection": true,
+          "blackLevel": 0.04
         }
       }
     },
@@ -643,7 +662,8 @@
         },
         "scanner": {
           "whiteCorrection": true,
-          "blackCorrection": true
+          "blackCorrection": true,
+          "blackLevel": 0.04
         }
       }
     }
