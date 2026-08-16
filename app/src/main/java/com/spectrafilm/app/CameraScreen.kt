@@ -367,8 +367,13 @@ private fun CameraScreenSupported(
     // SoundPool over a bundled click rather than MediaActionSound, ONLY because
     // MediaActionSound has no volume control — SoundPool.play() takes a 0..1 gain, so
     // the shutter can be both halved and made to track the slider. res/raw/shutter_click
-    // is a synthesised two-curtain click (bright short burst, duller longer one 52 ms
-    // later); the device had no shutter sound under /system/media/audio/ui to borrow.
+    // is a recorded Pentax K20D shutter (Freesound #538142 by tnk, CC0 — public domain,
+    // no attribution required; noted here for provenance). A bundled asset was needed
+    // because the device has no shutter sound under /system/media/audio/ui to borrow.
+    //
+    // Swapping the sound is a pure file replacement — nothing below reads its contents.
+    // It must stay 16-bit PCM WAV (or OGG/MP3): SoundPool fails SILENTLY on 24-bit or
+    // float, giving no sound and no error.
     val soundPool = remember {
         android.media.SoundPool.Builder()
             .setMaxStreams(2)
