@@ -15,6 +15,11 @@
  */
 package com.spectrafilm.app
 
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.foundation.layout.width
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.material3.AlertDialog
@@ -646,53 +651,133 @@ private fun PhotoInfo(item: Gallery.Item, aspect: Float) {
     }
 }
 
+/** Bubble height; the collapsed state is a circle of exactly this diameter. */
+private val DEL_H = 22.dp
+/** Tail depth below the bubble. Reserved in the layout so the tail is not clipped. */
+private val DEL_TAIL = 5.dp
+
 /**
- * The delete affordance: a small circled cross opposite the info badge, and a confirmation.
+ * The delete affordance: a trash can that opens into a speech bubble asking "Delete?".
  *
- * Mirrors [PhotoInfo] deliberately — same size, same circle, same corner inset, same fit-box
- * anchoring — so the two read as a pair rather than as one control and one afterthought. Bottom
- * LEFT, because a destructive action should not sit where the thumb goes looking for information.
+ * ONE SHAPE THROUGHOUT, which is what makes it read as a morph rather than a swap. Collapsed it
+ * is a rounded rect whose width equals its height — a circle. Opening animates only the width, so
+ * the same geometry becomes a pill, and the tail grows out of its underside at the same time. The
+ * can fades out over the first half of the open, the label in over the second, so the two never
+ * fight for the same space.
+ *
+ * The bubble IS the confirmation: tapping it deletes, tapping anywhere else dismisses. A separate
+ * dialog on top of a control that already asked the question would be asking twice.
  */
 @Composable
 private fun PhotoDelete(item: Gallery.Item, aspect: Float, onDelete: (Gallery.Item) -> Unit) {
-    var confirming by remember(item.id) { mutableStateOf(false) }
+    var open by remember(item.id) { mutableStateOf(false) }
+    val t by animateFloatAsState(
+        targetValue = if (open) 1f else 0f,
+        animationSpec = tween(240, easing = FastOutSlowInEasing),
+        label = "deleteBubble",
+    )
+
+    // Behind the bubble: anywhere else cancels. pointerInput rather than clickable so a
+    // full-screen catcher does not paint a ripple across the photograph.
+    if (open) {
+        Box(
+            Modifier.fillMaxSize().pointerInput(Unit) { detectTapGestures { open = false } },
+        )
+    }
+
     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
         Box(
             Modifier.fillMaxSize().aspectRatio(aspect),
             contentAlignment = Alignment.BottomStart,
         ) {
             Box(
-                Modifier.padding(12.dp).size(22.dp)
-                    .clip(CircleShape)
-                    .border(1.dp, Color.White.copy(alpha = 0.75f), CircleShape)
-                    .clickable { confirming = true },
-                contentAlignment = Alignment.Center,
+                Modifier
+                    // Bottom padding is short by the tail depth so the circle sits exactly where
+                    // it did before the tail existed.
+                    .padding(start = 12.dp, bottom = 12.dp - DEL_TAIL)
+                    .width(androidx.compose.ui.unit.lerp(DEL_H, 84.dp, t))
+                    .height(DEL_H + DEL_TAIL)
+                    .pointerInput(open, item.id) {
+                        detectTapGestures { if (open) onDelete(item) else open = true }
+                    },
             ) {
-                Text(
-                    "\u00d7",
-                    style = readoutTextStyle().copy(fontSize = 13.sp),
-                    color = Color.White.copy(alpha = 0.85f),
-                )
+                Canvas(Modifier.fillMaxSize()) {
+                    val h = DEL_H.toPx()
+                    val r = h / 2f
+                    val sw = 1.dp.toPx()
+                    val fill = Color.Black.copy(alpha = 0.35f)
+                    val ink = Color.White.copy(alpha = 0.75f)
+                    val body = Size(size.width, h)
+
+                    drawRoundRect(fill, size = body, cornerRadius = CornerRadius(r, r))
+                    if (t > 0.02f) {
+                        val tw = 6.dp.toPx() * t
+                        val th = DEL_TAIL.toPx() * t
+                        val x0 = r * 0.6f
+                        val tail = Path().apply {
+                            moveTo(x0, h - sw)
+                            lineTo(x0 + tw, h - sw)
+                            lineTo(x0 + tw * 0.15f, h + th)
+                            close()
+                        }
+                        drawPath(tail, fill)
+                        // Only the two outer edges are stroked; outlining the base as well would
+                        // draw a line straight through the bubble it is attached to.
+                        drawPath(
+                            Path().apply {
+                                moveTo(x0 + tw, h - sw)
+                                lineTo(x0 + tw * 0.15f, h + th)
+                                lineTo(x0, h - sw)
+                            },
+                            ink.copy(alpha = 0.75f * t),
+                            style = Stroke(sw),
+                        )
+                    }
+                    drawRoundRect(
+                        ink, size = body, cornerRadius = CornerRadius(r, r), style = Stroke(sw),
+                    )
+
+                    val glyph = (1f - t * 2f).coerceIn(0f, 1f)
+                    if (glyph > 0.02f) {
+                        val c = ink.copy(alpha = 0.85f * glyph)
+                        val cx = r
+                        val cy = h / 2f
+                        val bw = 8.dp.toPx()
+                        val bh = 9.dp.toPx()
+                        val lidY = cy - bh / 2f + 1.5.dp.toPx()
+                        // Lid, handle, body, and one centre rib — enough to read as a can at
+                        // 22 dp without turning into mush.
+                        drawLine(c, Offset(cx - bw / 2f, lidY), Offset(cx + bw / 2f, lidY), sw)
+                        drawLine(
+                            c,
+                            Offset(cx - 2.dp.toPx(), lidY - 2.dp.toPx()),
+                            Offset(cx + 2.dp.toPx(), lidY - 2.dp.toPx()),
+                            sw,
+                        )
+                        val top = lidY + 1.dp.toPx()
+                        val bot = cy + bh / 2f
+                        val inset = 1.dp.toPx()
+                        drawLine(c, Offset(cx - bw / 2f + inset, top), Offset(cx - bw / 2f + inset * 2f, bot), sw)
+                        drawLine(c, Offset(cx + bw / 2f - inset, top), Offset(cx + bw / 2f - inset * 2f, bot), sw)
+                        drawLine(c, Offset(cx - bw / 2f + inset * 2f, bot), Offset(cx + bw / 2f - inset * 2f, bot), sw)
+                        drawLine(c, Offset(cx, top + 1.dp.toPx()), Offset(cx, bot - 1.dp.toPx()), sw * 0.8f)
+                    }
+                }
+                val label = ((t - 0.5f) * 2f).coerceIn(0f, 1f)
+                if (label > 0.02f) {
+                    Box(
+                        Modifier.fillMaxWidth().height(DEL_H),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Text(
+                            "Delete?",
+                            style = readoutTextStyle(),
+                            color = Color.White.copy(alpha = 0.9f * label),
+                        )
+                    }
+                }
             }
         }
-    }
-    if (confirming) {
-        AlertDialog(
-            onDismissRequest = { confirming = false },
-            title = { Text("Delete this frame?") },
-            text = {
-                Text(
-                    "Removes the photograph from your gallery. This cannot be undone. The RAW it " +
-                        "was made from is kept, and is cleared separately in Settings > Storage.",
-                )
-            },
-            confirmButton = {
-                TextButton(onClick = { confirming = false; onDelete(item) }) { Text("Delete") }
-            },
-            dismissButton = {
-                TextButton(onClick = { confirming = false }) { Text("Cancel") }
-            },
-        )
     }
 }
 
