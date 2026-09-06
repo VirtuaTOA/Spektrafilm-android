@@ -15,6 +15,13 @@
  */
 package com.spectrafilm.app
 
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.layout.BoxScope
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.height
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Size
 import android.graphics.Bitmap
 import androidx.activity.compose.PredictiveBackHandler
 import androidx.compose.animation.core.Animatable
@@ -41,9 +48,8 @@ import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.systemBarsPadding
-import androidx.compose.foundation.lazy.grid.GridCells
-import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
-import androidx.compose.foundation.lazy.grid.itemsIndexed
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.CircleShape
@@ -375,19 +381,104 @@ private fun GalleryGrid(
         }
         return
     }
-    LazyVerticalGrid(
-        columns = GridCells.Adaptive(minSize = 108.dp),
-        modifier = Modifier.fillMaxSize().systemBarsPadding(),
-        contentPadding = PaddingValues(2.dp),
-        horizontalArrangement = Arrangement.spacedBy(2.dp),
-        verticalArrangement = Arrangement.spacedBy(2.dp),
-    ) {
-        // itemsIndexed, NOT items + indexOf: indexOf is a linear scan comparing data-class
-        // equality, run per visible cell per composition. Over a 500-frame roll that is real work
-        // on the UI thread during a scroll.
-        itemsIndexed(items, key = { _, it -> it.id }) { idx, item ->
-            GalleryCell(item) { rect, bmp -> onOpen(idx, rect, bmp) }
+    BoxWithConstraints(Modifier.fillMaxSize().systemBarsPadding()) {
+        // Frames per strip, from the width rather than a fixed count, so a phone gets 3 and a
+        // tablet or landscape gets more without the frames stretching.
+        val perStrip = ((maxWidth - 12.dp) / 116.dp).toInt().coerceIn(2, 6)
+        val strips = remember(items, perStrip) { items.chunked(perStrip) }
+        LazyColumn(
+            modifier = Modifier.fillMaxSize(),
+            contentPadding = PaddingValues(vertical = 10.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            // itemsIndexed, NOT items + indexOf: indexOf is a linear scan comparing data-class
+            // equality, run per visible cell per composition. Over a 500-frame roll that is real
+            // work on the UI thread during a scroll.
+            itemsIndexed(strips, key = { _, strip -> strip.first().id }) { stripIdx, strip ->
+                FilmStrip(strip, stripIdx * perStrip, perStrip, onOpen)
+            }
         }
+    }
+}
+
+// --- contact sheet -------------------------------------------------------------------
+// A contact sheet is the negative laid straight onto the paper and exposed through it, so
+// everything is inverted: the clear rebate between frames passes light and prints BLACK,
+// while the exposed edge markings print WHITE. That inversion is why a contact sheet looks
+// the way it does, and why this is a near-black strip with pale numbering rather than a grey
+// card with borders round each photo.
+private val STRIP_BASE = Color(0xFF090909)
+private val SPROCKET_FILL = Color(0xFF2C2C2C)
+private val REBATE_INK = Color(0xFFB9B4A8)
+
+/** Height of the perforation band above and below each strip. */
+private val REBATE_H = 14.dp
+
+/** One strip of frames, with its perforations and frame numbers. */
+@Composable
+private fun FilmStrip(
+    strip: List<Gallery.Item>,
+    firstIndex: Int,
+    perStrip: Int,
+    onOpen: (Int, Rect, Bitmap?) -> Unit,
+) {
+    Column(Modifier.fillMaxWidth().background(STRIP_BASE)) {
+        SprocketBand()
+        Row(
+            Modifier.fillMaxWidth().padding(horizontal = 3.dp),
+            horizontalArrangement = Arrangement.spacedBy(3.dp),
+        ) {
+            strip.forEachIndexed { i, item ->
+                Box(Modifier.weight(1f)) {
+                    GalleryCell(item) { rect, bmp -> onOpen(firstIndex + i, rect, bmp) }
+                }
+            }
+            // A short final strip keeps its frames at full size rather than stretching them
+            // across the width — a half-used roll still looks like a half-used roll.
+            repeat(perStrip - strip.size) { Spacer(Modifier.weight(1f)) }
+        }
+        SprocketBand {
+            Row(
+                Modifier.fillMaxSize().padding(horizontal = 3.dp),
+                horizontalArrangement = Arrangement.spacedBy(3.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                strip.forEachIndexed { i, _ ->
+                    Text(
+                        "${firstIndex + i + 1}",
+                        color = REBATE_INK,
+                        fontSize = 7.sp,
+                        fontFamily = FontFamily.Monospace,
+                        modifier = Modifier.weight(1f).padding(start = 2.dp),
+                    )
+                }
+                repeat(perStrip - strip.size) { Spacer(Modifier.weight(1f)) }
+            }
+        }
+    }
+}
+
+/** The perforation band. [content] is drawn over it — the frame numbers ride here on 35 mm. */
+@Composable
+private fun SprocketBand(content: @Composable BoxScope.() -> Unit = {}) {
+    Box(Modifier.fillMaxWidth().height(REBATE_H).background(STRIP_BASE)) {
+        Canvas(Modifier.fillMaxSize()) {
+            val holeW = 7.dp.toPx()
+            val holeH = 5.dp.toPx()
+            val pitch = 15.dp.toPx()
+            val top = (size.height - holeH) / 2f
+            var x = pitch * 0.3f
+            while (x + holeW <= size.width) {
+                drawRoundRect(
+                    color = SPROCKET_FILL,
+                    topLeft = Offset(x, top),
+                    size = Size(holeW, holeH),
+                    cornerRadius = CornerRadius(1.5.dp.toPx()),
+                )
+                x += pitch
+            }
+        }
+        content()
     }
 }
 
