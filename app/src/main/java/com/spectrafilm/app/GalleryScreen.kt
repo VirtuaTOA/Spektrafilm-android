@@ -15,6 +15,10 @@
  */
 package com.spectrafilm.app
 
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.TextButton
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.Row
@@ -205,6 +209,35 @@ fun GalleryScreen(
     var items by remember { mutableStateOf<List<Gallery.Item>>(emptyList()) }
     var loaded by remember { mutableStateOf(false) }
     var openAt by remember { mutableIntStateOf(0) }   // -1 = grid
+    // Set only when the platform insists on asking the user itself (see Gallery.delete).
+    var pendingDelete by remember {
+        mutableStateOf<Pair<Gallery.Item, android.content.IntentSender>?>(null)
+    }
+    var deleteError by remember { mutableStateOf<String?>(null) }
+    val consent = rememberLauncherForActivityResult(
+        ActivityResultContracts.StartIntentSenderForResult(),
+    ) { result ->
+        val target = pendingDelete?.first
+        pendingDelete = null
+        if (result.resultCode == android.app.Activity.RESULT_OK && target != null) {
+            val rest = items.filterNot { it.id == target.id }
+            items = rest
+            if (rest.isEmpty()) openAt = -1 else openAt = openAt.coerceAtMost(rest.lastIndex)
+        }
+    }
+    LaunchedEffect(pendingDelete) {
+        pendingDelete?.let { (_, sender) ->
+            consent.launch(androidx.activity.result.IntentSenderRequest.Builder(sender).build())
+        }
+    }
+    deleteError?.let { msg ->
+        AlertDialog(
+            onDismissRequest = { deleteError = null },
+            title = { Text("Couldn't delete") },
+            text = { Text(msg) },
+            confirmButton = { TextButton(onClick = { deleteError = null }) { Text("OK") } },
+        )
+    }
 
     // OPENING keeps the hero expand: the preview square grows out of the button into the newest
     // frame. CLOSING is a horizontal slide instead of a collapse, at both levels.
@@ -336,7 +369,26 @@ fun GalleryScreen(
                             // geometry, and dissolving between two copies DIMS at the midpoint.
                             ExpandingPhoto(h, from) { openGrow.value }
                         } else {
-                            GalleryViewer(items, openAt)
+                            GalleryViewer(items, openAt) { deleted ->
+                                scope.launch {
+                                    when (val r = withContext(Gallery.decodeDispatcher) {
+                                        Gallery.delete(ctx, deleted)
+                                    }) {
+                                        is Gallery.DeleteResult.Deleted -> {
+                                            val rest = items.filterNot { it.id == deleted.id }
+                                            items = rest
+                                            // Last frame gone: there is nothing left to page
+                                            // through, so fall back to the sheet.
+                                            if (rest.isEmpty()) openAt = -1
+                                            else openAt = openAt.coerceAtMost(rest.lastIndex)
+                                        }
+                                        is Gallery.DeleteResult.NeedsConsent ->
+                                            pendingDelete = deleted to r.request
+                                        is Gallery.DeleteResult.Failed ->
+                                            deleteError = r.message
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -594,6 +646,56 @@ private fun PhotoInfo(item: Gallery.Item, aspect: Float) {
     }
 }
 
+/**
+ * The delete affordance: a small circled cross opposite the info badge, and a confirmation.
+ *
+ * Mirrors [PhotoInfo] deliberately — same size, same circle, same corner inset, same fit-box
+ * anchoring — so the two read as a pair rather than as one control and one afterthought. Bottom
+ * LEFT, because a destructive action should not sit where the thumb goes looking for information.
+ */
+@Composable
+private fun PhotoDelete(item: Gallery.Item, aspect: Float, onDelete: (Gallery.Item) -> Unit) {
+    var confirming by remember(item.id) { mutableStateOf(false) }
+    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+        Box(
+            Modifier.fillMaxSize().aspectRatio(aspect),
+            contentAlignment = Alignment.BottomStart,
+        ) {
+            Box(
+                Modifier.padding(12.dp).size(22.dp)
+                    .clip(CircleShape)
+                    .border(1.dp, Color.White.copy(alpha = 0.75f), CircleShape)
+                    .clickable { confirming = true },
+                contentAlignment = Alignment.Center,
+            ) {
+                Text(
+                    "\u00d7",
+                    style = readoutTextStyle().copy(fontSize = 13.sp),
+                    color = Color.White.copy(alpha = 0.85f),
+                )
+            }
+        }
+    }
+    if (confirming) {
+        AlertDialog(
+            onDismissRequest = { confirming = false },
+            title = { Text("Delete this frame?") },
+            text = {
+                Text(
+                    "Removes the photograph from your gallery. This cannot be undone. The RAW it " +
+                        "was made from is kept, and is cleared separately in Settings > Storage.",
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = { confirming = false; onDelete(item) }) { Text("Delete") }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirming = false }) { Text("Cancel") }
+            },
+        )
+    }
+}
+
 @Composable
 private fun ExpandingPhoto(bitmap: Bitmap, from: Rect, progress: () -> Float) {
     val img = remember(bitmap) { bitmap.asImageBitmap() }
@@ -641,7 +743,11 @@ private fun ExpandingPhoto(bitmap: Bitmap, from: Rect, progress: () -> Float) {
 }
 
 @Composable
-private fun GalleryViewer(items: List<Gallery.Item>, startAt: Int) {
+private fun GalleryViewer(
+    items: List<Gallery.Item>,
+    startAt: Int,
+    onDelete: (Gallery.Item) -> Unit,
+) {
     val ctx = LocalContext.current
     val pager = rememberPagerState(initialPage = startAt, pageCount = { items.size })
     var scale by remember { mutableFloatStateOf(1f) }
@@ -775,7 +881,9 @@ private fun GalleryViewer(items: List<Gallery.Item>, startAt: Int) {
                 // Only on the SETTLED page, and only at fit: an info badge sliding past during a
                 // swipe, or floating over a zoomed-in crop, is noise.
                 if (settled && scale <= 1.01f) {
-                    PhotoInfo(item, b.width.toFloat() / b.height.toFloat())
+                    val ar = b.width.toFloat() / b.height.toFloat()
+                    PhotoInfo(item, ar)
+                    PhotoDelete(item, ar, onDelete)
                 }
             }
         }

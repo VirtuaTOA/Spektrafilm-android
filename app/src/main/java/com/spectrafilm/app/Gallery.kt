@@ -312,6 +312,48 @@ object Gallery {
     }.getOrNull()
 
     /** Drop cached thumbnails — call when the list changes so a deleted item cannot linger. */
+    /** Outcome of a delete attempt. [NeedsConsent] carries the system dialog to launch. */
+    sealed interface DeleteResult {
+        object Deleted : DeleteResult
+        data class NeedsConsent(val request: android.content.IntentSender) : DeleteResult
+        data class Failed(val message: String) : DeleteResult
+    }
+
+    /**
+     * Delete one photo from MediaStore. Call off the main thread.
+     *
+     * A direct delete succeeds for media THIS INSTALL created, which is the normal case. It stops
+     * being the normal case after a reinstall: ownership is recorded per install, so the rows
+     * survive while the claim to them does not, and the delete then throws instead of silently
+     * doing nothing. On API 30+ that is recoverable by asking the system to show its own consent
+     * dialog ([NeedsConsent]); on 29 the exception carries the same thing. Below 29 the
+     * WRITE_EXTERNAL_STORAGE grant covers it and there is nothing to recover from.
+     *
+     * Deleting the MediaStore row deletes the JPEG. The source DNG is NOT touched — it lives in
+     * app-private storage and is managed by Settings > Storage.
+     */
+    fun delete(ctx: Context, item: Item): DeleteResult {
+        return try {
+            val n = ctx.contentResolver.delete(item.uri, null, null)
+            if (n > 0) DeleteResult.Deleted
+            else DeleteResult.Failed("The photo was already gone.")
+        } catch (se: SecurityException) {
+            val sender = when {
+                Build.VERSION.SDK_INT >= Build.VERSION_CODES.R ->
+                    MediaStore.createDeleteRequest(ctx.contentResolver, listOf(item.uri))
+                        .intentSender
+                Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q ->
+                    (se as? android.app.RecoverableSecurityException)
+                        ?.userAction?.actionIntent?.intentSender
+                else -> null
+            }
+            if (sender != null) DeleteResult.NeedsConsent(sender)
+            else DeleteResult.Failed(se.message ?: "Not allowed to delete this photo.")
+        } catch (t: Throwable) {
+            DeleteResult.Failed(t.message ?: "Could not delete the photo.")
+        }
+    }
+
     fun clearCache() {
         cache.evictAll()
         displayCache.evictAll()
