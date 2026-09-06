@@ -12,6 +12,7 @@
  */
 package com.spectrafilm.app
 
+import android.text.format.Formatter
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -28,12 +29,15 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.launch
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -194,6 +198,9 @@ fun SettingsScreen(
             }
         }
 
+        // --- Storage ---
+        StorageCard()
+
         // --- Updates & diagnostics ---
         SettingsCard("Updates & diagnostics") {
             Button(
@@ -267,6 +274,102 @@ fun SettingsScreen(
 
         // --- About ---
         AboutCard()
+    }
+}
+
+/**
+ * Retained-RAW storage: how much the camera's kept DNGs cost, and a way to reclaim it.
+ *
+ * These files are invisible everywhere else — app-private storage no file browser can reach —
+ * so without this the only symptom is the app quietly occupying gigabytes. Measured 2.0 GB
+ * across 88 frames on the author's device before this existed.
+ */
+@Composable
+private fun StorageCard() {
+    val ctx = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var storage by remember { mutableStateOf<CaptureQueue.DngStorage?>(null) }
+    var busy by remember { mutableStateOf(false) }
+    var confirming by remember { mutableStateOf(false) }
+
+    // Off the main thread: this stats every file in the directory.
+    LaunchedEffect(Unit) {
+        storage = withContext(Dispatchers.IO) { CaptureQueue.dngStorage(ctx) }
+    }
+
+    SettingsCard("Storage") {
+        val s = storage
+        Text("Camera RAW backups", style = MaterialTheme.typography.bodyLarge)
+        Text(
+            when {
+                s == null -> "Measuring…"
+                s.totalFiles == 0 -> "None kept."
+                else -> "${Formatter.formatFileSize(ctx, s.totalBytes)} · ${s.totalFiles} file" +
+                    if (s.totalFiles == 1) "" else "s"
+            },
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Text(
+            "Every photo keeps the RAW it was made from, so a frame can be re-processed later. " +
+                "Nothing removes them automatically.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        // Queued frames have not been rendered yet; deleting their RAW would lose the photo,
+        // so they are excluded from the clear and the count is shown rather than hidden.
+        if (s != null && s.queuedFiles > 0) {
+            Text(
+                "${s.queuedFiles} still waiting to be processed " +
+                    "(${Formatter.formatFileSize(ctx, s.queuedBytes)}) and will be kept.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        Button(
+            onClick = { confirming = true },
+            enabled = !busy && s != null && s.clearableFiles > 0,
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Text(
+                when {
+                    busy -> "Clearing…"
+                    s == null -> "Clear RAW backups"
+                    s.clearableFiles == 0 -> "Nothing to clear"
+                    else -> "Clear ${Formatter.formatFileSize(ctx, s.clearableBytes)}"
+                },
+            )
+        }
+    }
+
+    if (confirming && storage != null) {
+        val s = storage!!
+        AlertDialog(
+            onDismissRequest = { confirming = false },
+            title = { Text("Delete RAW backups?") },
+            text = {
+                Text(
+                    "Frees ${Formatter.formatFileSize(ctx, s.clearableBytes)} by deleting " +
+                        "${s.clearableFiles} RAW file" + (if (s.clearableFiles == 1) "" else "s") +
+                        ". Your photographs are not affected — only the original RAWs, which " +
+                        "cannot be recovered afterwards.",
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    confirming = false
+                    busy = true
+                    scope.launch {
+                        withContext(Dispatchers.IO) { CaptureQueue.clearRetainedDngs(ctx) }
+                        storage = withContext(Dispatchers.IO) { CaptureQueue.dngStorage(ctx) }
+                        busy = false
+                    }
+                }) { Text("Delete") }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirming = false }) { Text("Cancel") }
+            },
+        )
     }
 }
 

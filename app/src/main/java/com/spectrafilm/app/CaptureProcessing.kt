@@ -134,6 +134,65 @@ object CaptureQueue {
         write(ctx, list(ctx).filterNot { it.dngPath == dngPath })
 
     fun pending(ctx: Context): Int = list(ctx).size
+
+    /**
+     * What the retained DNGs cost on disk, split by whether they are safe to delete.
+     *
+     * Captures keep their source DNG after rendering (see [ProcessingService.drain]) so a
+     * frame can be re-imported by hand later. Nothing prunes them, so at ~20-25 MB each they
+     * accumulate for the life of the install — invisibly, since app-private storage is not
+     * reachable from any file browser.
+     */
+    data class DngStorage(
+        val clearableFiles: Int,
+        val clearableBytes: Long,
+        val queuedFiles: Int,
+        val queuedBytes: Long,
+    ) {
+        val totalFiles: Int get() = clearableFiles + queuedFiles
+        val totalBytes: Long get() = clearableBytes + queuedBytes
+    }
+
+    /** Stats every file in the capture directory — call this off the main thread. */
+    fun dngStorage(ctx: Context): DngStorage {
+        val queued = list(ctx).mapTo(HashSet()) { it.dngPath }
+        var cf = 0
+        var cb = 0L
+        var qf = 0
+        var qb = 0L
+        captureDir(ctx).listFiles()?.forEach { f ->
+            if (!f.isFile) return@forEach
+            if (f.path in queued) {
+                qf++
+                qb += f.length()
+            } else {
+                cf++
+                cb += f.length()
+            }
+        }
+        return DngStorage(cf, cb, qf, qb)
+    }
+
+    /**
+     * Delete every retained DNG that is NOT still queued, returning the bytes freed.
+     *
+     * SKIPPING QUEUED JOBS IS A CORRECTNESS REQUIREMENT, NOT AN OPTIMISATION. Deleting a
+     * pending job's DNG loses that photograph outright: [ProcessingService.drain] finds the
+     * file missing, logs it, drops the job, and the frame is never rendered — with the RAW
+     * already gone there is nothing left to render it from.
+     */
+    fun clearRetainedDngs(ctx: Context): Long {
+        val queued = list(ctx).mapTo(HashSet()) { it.dngPath }
+        var freed = 0L
+        captureDir(ctx).listFiles()?.forEach { f ->
+            if (f.isFile && f.path !in queued) {
+                val size = f.length()
+                if (f.delete()) freed += size
+            }
+        }
+        Diag.i("capture: cleared retained DNGs, freed $freed bytes")
+        return freed
+    }
 }
 
 /**
