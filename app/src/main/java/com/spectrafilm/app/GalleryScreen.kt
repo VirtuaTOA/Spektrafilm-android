@@ -17,7 +17,6 @@ package com.spectrafilm.app
 
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.foundation.layout.width
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -653,17 +652,14 @@ private fun PhotoInfo(item: Gallery.Item, aspect: Float) {
 
 /** Bubble height; the collapsed state is a circle of exactly this diameter. */
 private val DEL_H = 22.dp
-/** Tail depth below the bubble. Reserved in the layout so the tail is not clipped. */
-private val DEL_TAIL = 5.dp
 
 /**
  * The delete affordance: a trash can that opens into a speech bubble asking "Delete?".
  *
  * ONE SHAPE THROUGHOUT, which is what makes it read as a morph rather than a swap. Collapsed it
  * is a rounded rect whose width equals its height — a circle. Opening animates only the width, so
- * the same geometry becomes a pill, and the tail grows out of its underside at the same time. The
- * can fades out over the first half of the open, the label in over the second, so the two never
- * fight for the same space.
+ * the same geometry becomes a pill. The can fades out over the first half of the open, the label
+ * in over the second, so the two never fight for the same space.
  *
  * The bubble IS the confirmation: tapping it deletes, tapping anywhere else dismisses. A separate
  * dialog on top of a control that already asked the question would be asking twice.
@@ -692,11 +688,9 @@ private fun PhotoDelete(item: Gallery.Item, aspect: Float, onDelete: (Gallery.It
         ) {
             Box(
                 Modifier
-                    // Bottom padding is short by the tail depth so the circle sits exactly where
-                    // it did before the tail existed.
-                    .padding(start = 12.dp, bottom = 12.dp - DEL_TAIL)
+                    .padding(start = 12.dp, bottom = 12.dp)
                     .width(androidx.compose.ui.unit.lerp(DEL_H, 84.dp, t))
-                    .height(DEL_H + DEL_TAIL)
+                    .height(DEL_H)
                     .pointerInput(open, item.id) {
                         detectTapGestures { if (open) onDelete(item) else open = true }
                     },
@@ -710,29 +704,6 @@ private fun PhotoDelete(item: Gallery.Item, aspect: Float, onDelete: (Gallery.It
                     val body = Size(size.width, h)
 
                     drawRoundRect(fill, size = body, cornerRadius = CornerRadius(r, r))
-                    if (t > 0.02f) {
-                        val tw = 6.dp.toPx() * t
-                        val th = DEL_TAIL.toPx() * t
-                        val x0 = r * 0.6f
-                        val tail = Path().apply {
-                            moveTo(x0, h - sw)
-                            lineTo(x0 + tw, h - sw)
-                            lineTo(x0 + tw * 0.15f, h + th)
-                            close()
-                        }
-                        drawPath(tail, fill)
-                        // Only the two outer edges are stroked; outlining the base as well would
-                        // draw a line straight through the bubble it is attached to.
-                        drawPath(
-                            Path().apply {
-                                moveTo(x0 + tw, h - sw)
-                                lineTo(x0 + tw * 0.15f, h + th)
-                                lineTo(x0, h - sw)
-                            },
-                            ink.copy(alpha = 0.75f * t),
-                            style = Stroke(sw),
-                        )
-                    }
                     drawRoundRect(
                         ink, size = body, cornerRadius = CornerRadius(r, r), style = Stroke(sw),
                     )
