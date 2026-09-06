@@ -1,5 +1,67 @@
 # Changelog
 
+## v0.9.0 (versionCode 11) — 2026-09-06 — the camera becomes the app 📷
+
+Everything since v0.8.0, built on the VirtuaTOA fork. **Debug-signed** — see the note at the
+end for why that is deliberate rather than an oversight.
+
+### Diffusion filters now survive the export
+Choosing a diffusion filter used to change the viewfinder and nothing else: the engine convolved
+the PSF directly, and because the kernel radius scales with the frame (~0.37 x the longest edge),
+a full-resolution export reached ~3.1 M taps per pixel — about **3.6 hours** a frame, so it was
+disabled on the export path.
+
+It now convolves through an FFT, which is what the upstream oracle does too
+(`scipy.signal.fftconvolve`). Measured at real export size (4080x3060):
+
+| filter | before | after |
+|---|---:|---:|
+| Glimmerglass | ~3.6 h | 3.2 s |
+| Black Pro-Mist | ~3.6 h | 5.3 s |
+| Pro-Mist | ~3.6 h | 8.6 s |
+| Cinebloom | ~3.6 h | 8.9 s |
+
+Parity 37/37 throughout — `test_diffusion` is bit-exact and `test_diffusion_e2e` confirms the
+filter is genuinely applied rather than silently skipped. Three compounding wins: a single
+mixed-radix (2/3/5/7) pass instead of 42 overlap-add tiles, a circular convolution over the
+already-reflect-padded plane (which needs w+2r, not w+4r — 4x the area was being computed for
+nothing), and a threaded 2D transform.
+
+### Chroma denoise for the coloured shadow noise
+Measured in structurally flat patches of real captures, blue-yellow chroma noise is *larger* than
+the luminance noise (sigma 89.3 vs 81.3). A guided filter — luma as the guide, applied to the two
+chroma difference channels — cuts it ~88% while leaving luminance mathematically untouched, so
+sharpness and the film grain that lands on top are unaffected. LibRaw's FBDD runs ahead of it at
+strength 1 (measured: 2 is worse, not better).
+
+### Camera
+- Shutter sound follows the phone: half the system volume, a haptic on vibrate, silent on silent.
+  Previously it played at full volume through the ringer, because `MediaActionSound` uses a stream
+  built so shutters *cannot* be silenced.
+- Recorded shutter sample (Freesound #538142, tnk, CC0) replacing the synthesised click.
+- ISO recorded and shown in the gallery info panel.
+- Lens and NEGATIVE/SLIDE now survive a rotation instead of resetting to 24 mm.
+- Scan black level pinned to 0.04 across all 20 stocks — the correction was enabled but had no
+  target set, so blacks sat at the 0.01 default.
+
+### Gallery
+- Laid out as a **film contact sheet**: strips on a near-black base with perforations and frame
+  numbers, following what a contact sheet physically is (the clear rebate prints black).
+- **Delete a frame**, via a trash can that morphs into a "Delete?" bubble, with the photograph
+  dissolving away as it goes. The source RAW is deliberately kept.
+
+### Settings
+- **Storage card**: how much the retained RAWs cost and a button to reclaim it. Every capture keeps
+  its source DNG and nothing ever pruned them — 3.1 GB across 139 files on the author's device,
+  invisible to any file browser. Queued frames are excluded, because deleting a pending job's RAW
+  loses that photograph outright.
+
+### Why this is a debug build
+R8/minify produces black exports — the release build launches and previews correctly, then writes
+an all-black image, because the shrinker removes something the processing path reaches through JNI
+and fails silently. The repo commits a stable `debug.keystore`, so debug APKs are signed with a
+consistent key and update in place forever. See `HANDOFF.md`.
+
 ## Unreleased — targeting v0.8.0 (versionCode 10) — parity fixes, gamut compression, spatial decoupling + the speed pass 🔍⚡
 
 A codebase-wide review (`docs/CODE_REVIEW_2026-06-24.md`) and its top-priority fixes, the
