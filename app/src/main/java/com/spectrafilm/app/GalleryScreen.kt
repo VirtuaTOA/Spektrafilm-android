@@ -15,6 +15,7 @@
  */
 package com.spectrafilm.app
 
+import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.ui.graphics.drawscope.Stroke
@@ -653,6 +654,9 @@ private fun PhotoInfo(item: Gallery.Item, aspect: Float) {
 /** Bubble height; the collapsed state is a circle of exactly this diameter. */
 private val DEL_H = 22.dp
 
+/** Dissolve on delete. Quick — it is an acknowledgement, not a set piece. */
+private const val DISSOLVE_MS = 200
+
 /**
  * The delete affordance: a trash can that opens into a speech bubble asking "Delete?".
  *
@@ -806,8 +810,15 @@ private fun GalleryViewer(
 ) {
     val ctx = LocalContext.current
     val pager = rememberPagerState(initialPage = startAt, pageCount = { items.size })
+    val scope = rememberCoroutineScope()
     var scale by remember { mutableFloatStateOf(1f) }
     var offset by remember { mutableStateOf(Offset.Zero) }
+
+    // A frame does not vanish on the beat of the tap: it dissolves, then the row closes behind
+    // it. The delete only reaches MediaStore once the fade has finished, so the photograph is
+    // still on screen while it is being removed and the two never disagree.
+    var dissolvingId by remember { mutableStateOf<Long?>(null) }
+    val dissolve = remember { Animatable(1f) }
     var box by remember { mutableStateOf(androidx.compose.ui.unit.IntSize.Zero) }
 
     // Every frame opens fit-to-screen; the zoom belongs to the photo you are looking at.
@@ -865,6 +876,9 @@ private fun GalleryViewer(
         }
         Box(
             Modifier.fillMaxSize()
+                // The WHOLE page fades — photograph and badges together. Fading only the image
+                // would leave the trash can and the info mark hanging over nothing.
+                .graphicsLayer { alpha = if (item.id == dissolvingId) dissolve.value else 1f }
                 .pointerInput(item.id) {
                     // HAND-ROLLED, not detectTransformGestures: that helper CONSUMES every drag
                     // it sees, including a one-finger swipe, so the pager never received the
@@ -939,7 +953,16 @@ private fun GalleryViewer(
                 if (settled && scale <= 1.01f) {
                     val ar = b.width.toFloat() / b.height.toFloat()
                     PhotoInfo(item, ar)
-                    PhotoDelete(item, ar, onDelete)
+                    PhotoDelete(item, ar) { target ->
+                        scope.launch {
+                            dissolvingId = target.id
+                            dissolve.snapTo(1f)
+                            dissolve.animateTo(0f, tween(DISSOLVE_MS, easing = LinearEasing))
+                            onDelete(target)
+                            dissolvingId = null
+                            dissolve.snapTo(1f)
+                        }
+                    }
                 }
             }
         }
