@@ -374,23 +374,30 @@ fun GalleryScreen(
                             // geometry, and dissolving between two copies DIMS at the midpoint.
                             ExpandingPhoto(h, from) { openGrow.value }
                         } else {
+                            // SUSPENDS until the row is actually gone, and reports whether it
+                            // went. The viewer holds the frame faded out for exactly that long;
+                            // returning early left it invisible, then snapped it back to full
+                            // opacity for the length of the MediaStore delete — the flicker.
                             GalleryViewer(items, openAt) { deleted ->
-                                scope.launch {
-                                    when (val r = withContext(Gallery.decodeDispatcher) {
-                                        Gallery.delete(ctx, deleted)
-                                    }) {
-                                        is Gallery.DeleteResult.Deleted -> {
-                                            val rest = items.filterNot { it.id == deleted.id }
-                                            items = rest
-                                            // Last frame gone: there is nothing left to page
-                                            // through, so fall back to the sheet.
-                                            if (rest.isEmpty()) openAt = -1
-                                            else openAt = openAt.coerceAtMost(rest.lastIndex)
-                                        }
-                                        is Gallery.DeleteResult.NeedsConsent ->
-                                            pendingDelete = deleted to r.request
-                                        is Gallery.DeleteResult.Failed ->
-                                            deleteError = r.message
+                                when (val r = withContext(Gallery.decodeDispatcher) {
+                                    Gallery.delete(ctx, deleted)
+                                }) {
+                                    is Gallery.DeleteResult.Deleted -> {
+                                        val rest = items.filterNot { it.id == deleted.id }
+                                        items = rest
+                                        // Last frame gone: there is nothing left to page
+                                        // through, so fall back to the sheet.
+                                        if (rest.isEmpty()) openAt = -1
+                                        else openAt = openAt.coerceAtMost(rest.lastIndex)
+                                        true
+                                    }
+                                    is Gallery.DeleteResult.NeedsConsent -> {
+                                        pendingDelete = deleted to r.request
+                                        false
+                                    }
+                                    is Gallery.DeleteResult.Failed -> {
+                                        deleteError = r.message
+                                        false
                                     }
                                 }
                             }
@@ -806,7 +813,7 @@ private fun ExpandingPhoto(bitmap: Bitmap, from: Rect, progress: () -> Float) {
 private fun GalleryViewer(
     items: List<Gallery.Item>,
     startAt: Int,
-    onDelete: (Gallery.Item) -> Unit,
+    onDelete: suspend (Gallery.Item) -> Boolean,
 ) {
     val ctx = LocalContext.current
     val pager = rememberPagerState(initialPage = startAt, pageCount = { items.size })
@@ -958,9 +965,14 @@ private fun GalleryViewer(
                             dissolvingId = target.id
                             dissolve.snapTo(1f)
                             dissolve.animateTo(0f, tween(DISSOLVE_MS, easing = LinearEasing))
-                            onDelete(target)
+                            // Stays faded out until the delete has actually happened. On success
+                            // the frame is already out of the list by the time this returns, so
+                            // there is no page left to un-fade; on failure it comes back rather
+                            // than leaving an invisible photograph behind.
+                            if (!onDelete(target)) {
+                                dissolve.animateTo(1f, tween(DISSOLVE_MS, easing = LinearEasing))
+                            }
                             dissolvingId = null
-                            dissolve.snapTo(1f)
                         }
                     }
                 }
