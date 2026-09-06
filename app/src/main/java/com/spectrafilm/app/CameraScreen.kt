@@ -157,6 +157,17 @@ private val TOGGLE_INSET = 10.dp
 private val SHUTTER_DIAMETER = 70.dp
 
 /**
+ * Stable identity for a lens across an activity recreation. LensOption is not Parcelable and
+ * its focal length is not unique (two physical cameras can report the same equivalent), so the
+ * camera ids are what get saved.
+ */
+private val LensOption.key: String get() = "$logicalId|${physicalId ?: ""}"
+
+/** The lens the camera opens on: nearest a 24 mm equivalent, matching the stock camera app. */
+private fun defaultLens(lenses: List<LensOption>): LensOption =
+    lenses.minByOrNull { abs(it.equivFocalMm - 24) } ?: lenses.first()
+
+/**
  * Diffusion filter grades, named as the real Black Pro-Mist glass is — photographers already know
  * what 1/4 looks like, and an abstract 0..1 slider would not mean anything on a lens.
  *
@@ -300,15 +311,22 @@ private fun CameraScreenSupported(
         CameraMessage("No rear camera reported RAW-capable output on this device.")
         return
     }
-    var lens by remember {
-        mutableStateOf(lenses.minByOrNull { abs(it.equivFocalMm - 24) } ?: lenses.first())
+    // Rotating recreates the activity (there is no configChanges in the manifest), which
+    // discards a plain remember — the lens snapped back to the 24 mm default mid-shoot.
+    // Only the camera id is saved; the option is resolved back out of the inventory, and
+    // falls back to the default if that lens somehow is not reported this time.
+    var lensKey by rememberSaveable { mutableStateOf(defaultLens(lenses).key) }
+    val lens = remember(lensKey, lenses) {
+        lenses.firstOrNull { it.key == lensKey } ?: defaultLens(lenses)
     }
 
     // --- film stocks, split by process --------------------------------------------------
     // One preset per film stock, each carrying its own process: reversal stocks set
     // scanFilm (scanned as a positive rather than printed), negatives do not. So the
     // toggle filters on the preset's own group rather than second-guessing the stock.
-    var slideMode by remember { mutableStateOf(false) }
+    // Saveable for the same reason as the lens: a rotation used to flip this back to
+    // NEGATIVE, and savedStock is keyed on it, so the chosen film reset with it.
+    var slideMode by rememberSaveable { mutableStateOf(false) }
     val allPresets = remember { runCatching { BuiltInPresets.load(ctx) }.getOrDefault(emptyList()) }
     val stocks = remember(slideMode, allPresets) {
         allPresets.filter { (it.group == "Slide") == slideMode }
@@ -725,7 +743,7 @@ private fun CameraScreenSupported(
             horizontalArrangement = Arrangement.spacedBy(14.dp),
         ) {
             for (l in lenses) {
-                LensChip(label = l.label, selected = l == lens, onClick = { lens = l })
+                LensChip(label = l.label, selected = l == lens, onClick = { lensKey = l.key })
             }
         }
 
